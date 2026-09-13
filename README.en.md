@@ -53,6 +53,16 @@ The **models** below stay per product, each with its own grey heading, a refresh
 button and the list's provenance (live / saved / built-in). Each row shows the model
 name, its promotion badges and rate, and its context window.
 
+A model that reasons but declares no levels gets a **Detect** button in its row.
+It asks first, inline, because a detection sends real requests against your own
+quota; once answered, the levels it found appear beside the button and the button
+becomes **Detect again**. Only models that actually need it carry the button: one
+that states its levels already shows them in the picker, and one that does not
+reason has nothing to detect.
+
+> The button needs no separate opt-in: the confirmation *is* that detection's
+> authorization. (The setting only gates the automatic sweep.)
+
 **The context length is switchable**: when the upstream declares more than one
 length for a model (200K / 1M, say), the row carries a sliding switch. Choosing
 one **changes the request** — the plugin reports the chosen length to DSH, which
@@ -77,7 +87,7 @@ A **floating window** sits in the top-right corner of the conversation, showing 
 
 - **Rate**: every model name carries its credits multiplier (e.g. `GLM-5.2 · x0.79`, `Hy3 · x0.00`) in both the `/model` popup and the composer's model dropdown. The rate is display-only and never affects requests.
 
-- **Promo badges**: promo badges (`限时免费`, `夜间折扣`) ride the model name itself (e.g. `Hy4 preview · x0.00 · 限时免费`), visible wherever you pick a model; the status card also collects currently-discounted models. Per the WorkBuddy service data, synced each time DSH starts. The international version's promotions come from the service's `modelPromotions` (which carry an effective window). Once a promotion lapses its badge is withdrawn; because the service writes the discounted value into the model's own rate field, the original price cannot be reconstructed, so that model then reports "price unavailable — refresh to update" rather than repeating the discounted rate or claiming the model is free.
+- **Promo badges**: promo badges (`限时免费`, `夜间折扣`, `Free now`) ride the model name itself (e.g. `Hy4 preview · x0.00 · 限时免费`), visible wherever you pick a model. They are shown in the service's own words rather than translated, and when a badge already says a model is free no additional "Free" chip is stacked on it. Per the WorkBuddy service data, synced each time DSH starts. The international version's promotions come from the service's `modelPromotions` (which carry an effective window). Once a promotion lapses its badge is withdrawn; because the service writes the discounted value into the model's own rate field, the original price cannot be reconstructed, so that model then reports "price unavailable — refresh to update" rather than repeating the discounted rate or claiming the model is free.
 
 ![Settings card showing the plugin](assets/2.png)
 

@@ -465,6 +465,118 @@ describe('WorkBuddy settings page', () => {
     expect(call?.body['id']).toBe('ai:ent')
   })
 
+  it('shows the upstream\'s own promotion wording without repeating "free"', async () => {
+    byRoute[CN_CARD_VARIANT.statusPath] = {
+      ...signedIn([account()]),
+      models: [
+        // The international catalog's shape: a badge naming the promotion *and*
+        // the derived free flag. Both facts, one claim.
+        { id: 'a', name: 'Free Model', free: true, badges: ['Free now'] },
+        // A free model whose catalog declares no badge at all: the derived chip
+        // is the only thing that can say so.
+        { id: 'b', name: 'Quiet Free', free: true },
+        // A promotion that is not about being free must survive untouched.
+        { id: 'c', name: 'Night', badges: ['夜间折扣'] },
+      ],
+    } as unknown as WorkBuddyWebStatus
+    await mount()
+    const chips = [...document.querySelectorAll('span')]
+      .map(node => (node.textContent ?? '').trim())
+      .filter(label => label !== '')
+    // The upstream's wording, verbatim — not translated and not doubled.
+    expect(chips).toContain('Free now')
+    expect(chips.filter(chip => chip === 'Free now')).toHaveLength(1)
+    // The derived label still covers the model that has no badge.
+    expect(chips).toContain(t('freeModel'))
+    expect(chips.filter(chip => chip === t('freeModel'))).toHaveLength(1)
+    // An unrelated promotion is left alone.
+    expect(chips).toContain('夜间折扣')
+  })
+
+  it('offers a detection button only for models the host lists as candidates', async () => {
+    byRoute[CN_CARD_VARIANT.statusPath] = {
+      ...signedIn([account()]),
+      models: [
+        { id: 'probe-me', name: 'Probe Me' },
+        { id: 'declared', name: 'Already Declared' },
+      ],
+      probe: { consent: true, running: false, candidates: ['probe-me'], results: [] },
+    } as unknown as WorkBuddyWebStatus
+    await mount()
+    const detect = buttons().filter(button => button.label === t('probeStart'))
+    // One button, on the candidate row only: a model that already states its
+    // levels has nothing to discover, and probing it would spend credit for it.
+    expect(detect).toHaveLength(1)
+    expect(text()).toContain('Probe Me')
+  })
+
+  it('asks before spending credit, then probes the model it asked about', async () => {
+    byRoute[CN_CARD_VARIANT.statusPath] = {
+      ...signedIn([account()]),
+      models: [{ id: 'probe-me', name: 'Probe Me' }],
+      probe: { consent: true, running: false, candidates: ['probe-me'], results: [] },
+    } as unknown as WorkBuddyWebStatus
+    await mount()
+    await act(async () => { buttons().find(button => button.label === t('probeStart'))?.node.click(); await Promise.resolve() })
+    // Nothing is sent until the user agrees: a detection is real traffic against
+    // their own quota.
+    expect(posted()).toHaveLength(0)
+    expect(text()).toContain(t('probeConfirmBody', { model: 'Probe Me' }))
+
+    await act(async () => {
+      buttons().find(button => button.label === t('probeConfirmAction'))?.node.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const call = posted().find(entry => entry.body['action'] === 'probe')
+    expect(call).toBeDefined()
+    expect(call?.url).toBe(CN_CARD_VARIANT.probePath)
+    expect(call?.body['model']).toBe('probe-me')
+  })
+
+  it('reports why a detection could not finish', async () => {
+    byRoute[CN_CARD_VARIANT.statusPath] = {
+      ...signedIn([account()]),
+      models: [{ id: 'probe-me', name: 'Probe Me' }],
+      probe: { consent: false, running: false, candidates: ['probe-me'], results: [] },
+    } as unknown as WorkBuddyWebStatus
+    // The probe route answers a refusal with `unavailable`, not `failed` —
+    // a state name worth pinning, because reading for the wrong one turns every
+    // refusal into silence.
+    request.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        return { ok: true, json: async () => ({ state: 'unavailable', reason: 'no WorkBuddy credential' }) }
+      }
+      return { ok: true, json: async () => byRoute[url] }
+    })
+    await mount()
+    await act(async () => { buttons().find(button => button.label === t('probeStart'))?.node.click(); await Promise.resolve() })
+    await act(async () => {
+      buttons().find(button => button.label === t('probeConfirmAction'))?.node.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(text()).toContain('no WorkBuddy credential')
+  })
+
+  it('shows a recorded detection beside the model it belongs to', async () => {
+    byRoute[CN_CARD_VARIANT.statusPath] = {
+      ...signedIn([account()]),
+      models: [{ id: 'probe-me', name: 'Probe Me' }],
+      probe: {
+        consent: true,
+        running: false,
+        candidates: ['probe-me'],
+        results: [{ id: 'probe-me', name: 'Probe Me', validation: 'validating', efforts: ['low', 'high'], probedAt: Date.now() }],
+      },
+    } as unknown as WorkBuddyWebStatus
+    await mount()
+    // The recorded answer is visible without re-running anything, and the button
+    // switches to re-detection.
+    expect(text()).toContain('low / high')
+    expect(buttons().some(button => button.label === t('probeRedetect'))).toBe(true)
+  })
+
   it('surfaces a refusal from the host instead of failing silently', async () => {
     request.mockImplementation(async (url: string, init?: RequestInit) => {
       if (init?.method === 'POST') {

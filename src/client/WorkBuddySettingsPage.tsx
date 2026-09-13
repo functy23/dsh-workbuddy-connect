@@ -29,6 +29,8 @@ import type {
   WorkBuddyAccountResult,
   WorkBuddyQrChallenge,
   WorkBuddyWebAccount,
+  WorkBuddyWebModelBadge,
+  WorkBuddyWebProbeSection,
   WorkBuddyWebStatus,
 } from '../status-paths.ts'
 import { encodeQrCode } from './qr-code.ts'
@@ -100,6 +102,19 @@ const balanceStyle: CSSProperties = {
   whiteSpace: 'nowrap',
 }
 const metaStyle: CSSProperties = { fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-tertiary)' }
+/** A model row plus the confirmation it can expand into. */
+const rowColumnStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 8 }
+/** One-line confirmation of a paid detection, in the row that asked for it. */
+const confirmBoxStyle: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 10,
+  padding: '10px 12px',
+  border: '1px solid var(--dsw-alias-border-l2)',
+  borderRadius: 10,
+  background: 'var(--dsw-alias-bg-layer-1)',
+}
+const confirmRowStyle: CSSProperties = { display: 'flex', justifyContent: 'flex-end', gap: 8 }
 /** Name over product label: a column so the name's ellipsis cannot clip it. */
 const nameColumnStyle: CSSProperties = { display: 'flex', flexDirection: 'column', minWidth: 0 }
 /**
@@ -348,6 +363,31 @@ function AccountRow({ account, product, busy, now, t, onAction }: {
   )
 }
 
+/**
+ * The promotional chips one model row shows, without saying "free" twice.
+ *
+ * The upstream's own badge text is shown verbatim rather than translated — it is
+ * the product's own wording for its own promotion ("Free now", "限时免费"), and
+ * restating it in this plugin's language would be inventing copy for a claim the
+ * upstream made.
+ *
+ * The deduplication exists because a free model can arrive with *both* facts: a
+ * badge naming the promotion, and the `free` flag the rate was derived from. The
+ * international catalog does exactly that, which rendered "Free now" and "Free"
+ * side by side. When a badge already says the model is free, the derived chip is
+ * dropped — the badge is the specific claim, and this one is only the summary.
+ */
+function promotionChips(model: WorkBuddyWebModelBadge, freeLabel: string): string[] {
+  const badges = model.badges ?? []
+  // Covers both products' wording: the international catalog says "Free now",
+  // the CN one says "限时免费", and either already carries the claim.
+  const alreadySaysFree = badges.some(badge => /free/i.test(badge) || badge.includes('免费'))
+  return [
+    ...badges,
+    ...model.free === true && !alreadySaysFree ? [freeLabel] : [],
+  ]
+}
+
 /** A token count as the switch's label: 1M reads better than 1000000. */
 function shortTokens(tokens: number): string {
   if (tokens >= 1_000_000 && tokens % 1_000_000 === 0) return `${String(tokens / 1_000_000)}M`
@@ -356,26 +396,46 @@ function shortTokens(tokens: number): string {
 }
 
 /**
- * The model list for one product, with a context-length switch where there is a
- * choice and a detection button per model.
+ * The model list for one product: a context-length switch where the upstream
+ * declares a choice, and a reasoning-level detection button where the model has
+ * levels worth discovering.
  *
- * The switch is the reason this block is not read-only: a model the upstream
- * publishes several windows for runs at whichever one is selected, which is what
- * lets a long transcript continue. It is a write, so it goes through the same
- * key-bearing route the account actions use.
+ * Both controls are writes and share the key-bearing route the account actions
+ * use. Detection sits here rather than only in the composer because it is a
+ * property of the model you are looking at — reading down the list with the
+ * models in front of you is the moment you notice one has no levels declared,
+ * and having to go and pick that model first to fix it was the roundabout part.
  */
-function ModelsBlock({ variant, status, busy, t, onContext, onRefresh }: {
+function ModelsBlock({ variant, status, probe, busy, t, onContext, onRefresh, onDetect, onClearProbe }: {
   variant: WorkBuddyCardVariant
   status: WorkBuddyWebStatus | undefined
+  /** Detection state, from the status document: consent, candidates, results. */
+  probe: WorkBuddyWebProbeSection | undefined
   busy: boolean
   t: Translate
   onContext: (model: string, length: number) => void
   onRefresh: () => void
+  onDetect: (model: string) => void
+  onClearProbe: () => void
 }): React.ReactNode {
   const signedIn = status !== undefined && status.status === 'signed-in' ? status : undefined
   const models = signedIn?.models ?? []
   const catalog = signedIn?.catalog
   const format = new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short' })
+  /**
+   * Which model is waiting for the user to agree to a detection.
+   *
+   * Detection sends real requests against the user's own quota, so it asks
+   * first — inline, in the row the button belongs to, rather than in a modal:
+   * the question is one line about the model beside it, and a dialog for that is
+   * heavier than the action it guards.
+   */
+  const [pending, setPending] = useState<string>()
+  // A re-read can drop a model from the candidates; a stale confirmation for a
+  // row that no longer renders would hang around invisibly.
+  useEffect(() => {
+    if (pending !== undefined && !(probe?.candidates ?? []).includes(pending)) setPending(undefined)
+  }, [pending, probe?.candidates])
   return (
     <div style={groupStyle}>
       <div style={groupHeadStyle}>
@@ -401,21 +461,55 @@ function ModelsBlock({ variant, status, busy, t, onContext, onRefresh }: {
       {models.length === 0
         ? <p style={metaStyle}>{t('modelsEmpty')}</p>
         : models.map(model => (
-            <div key={model.id} style={rowStyle}>
+            <div key={model.id} style={rowColumnStyle}>
+            <div style={rowStyle}>
               <span style={rowMainStyle}>
                 <span style={nameStyle} title={model.name}>{model.name}</span>
                 {/* Promotions sit beside the name: they are part of what the
                     row is offering, and a separate column would push the
                     switch off the edge. */}
-                {model.badges?.map(badge => (
-                  <span key={badge} style={badgeStyle}>{badge}</span>
+                {promotionChips(model, t('freeModel')).map(chip => (
+                  <span key={chip} style={badgeStyle}>{chip}</span>
                 ))}
-                {model.free === true ? <span style={badgeStyle}>{t('freeModel')}</span> : null}
                 {model.credits === undefined
                   ? model.rateUnknown === true ? <span style={metaStyle}>{t('rateUnknown')}</span> : null
                   : <span style={metaStyle}>{t('rate', { rate: model.credits })}</span>}
               </span>
               <span style={rowEndStyle}>
+                {/*
+                  * Detection is offered only for models the host lists as
+                  * candidates: a model that reasons but declares no levels.
+                  * Everything else either already states its levels (shown in
+                  * the picker) or does not reason at all, and probing it would
+                  * spend credit to learn nothing.
+                  */}
+                {probe === undefined || !probe.candidates.includes(model.id) ? null : (
+                  <span style={rowEndStyle}>
+                    {(() => {
+                      const result = probe.results.find(entry => entry.id === model.id)
+                      if (result === undefined) return null
+                      return (
+                        <span style={badgeStyle} title={t('probeTooltipVerified', { levels: result.efforts.join(' / ') })}>
+                          {result.validation === 'validating' && result.efforts.length > 0
+                            ? result.efforts.join(' / ')
+                            : t(result.validation === 'non-validating' ? 'probeResultNotValidating' : 'probeResultUnknown')}
+                        </span>
+                      )
+                    })()}
+                    <button
+                      type="button"
+                      style={buttonStyle}
+                      disabled={busy || probe.running === true}
+                      title={t('probeTooltipIdle', { model: model.name })}
+                      onClick={() => { setPending(model.id) }}
+                    >
+                      {(() => {
+                        const result = probe.results.find(entry => entry.id === model.id)
+                        return t(result === undefined ? 'probeStart' : 'probeRedetect')
+                      })()}
+                    </button>
+                  </span>
+                )}
                 {model.contextChoices === undefined || model.contextChoices.length < 2
                   // A single declared window has nothing to switch between, so
                   // it is reported as a fact rather than offered as a control.
@@ -436,6 +530,31 @@ function ModelsBlock({ variant, status, busy, t, onContext, onRefresh }: {
                       onChange={length => { onContext(model.id, length) }}
                     />}
               </span>
+            </div>
+            {/*
+              * The confirmation opens inside the row it belongs to, so the
+              * question ("send real requests to this model?") stays beside the
+              * button that asked it instead of appearing at the bottom of a long
+              * list, a screen away from its subject.
+              */}
+            {pending !== model.id ? null : (
+              <div style={confirmBoxStyle}>
+                <p style={metaStyle}>{t('probeConfirmBody', { model: model.name })}</p>
+                <div style={confirmRowStyle}>
+                  <button type="button" style={buttonStyle} onClick={() => { setPending(undefined) }}>
+                    {t('cancel')}
+                  </button>
+                  <button
+                    type="button"
+                    style={primaryStyle}
+                    disabled={busy || probe?.running === true}
+                    onClick={() => { setPending(undefined); onDetect(model.id) }}
+                  >
+                    {t('probeConfirmAction')}
+                  </button>
+                </div>
+              </div>
+            )}
             </div>
           ))}
     </div>
@@ -932,6 +1051,42 @@ export function WorkBuddySettingsPage({ t }: WorkBuddySettingsPageProps): React.
       .finally(() => { if (mounted.current) setBusy(false) })
   }, [keyFor, readAll, t])
 
+  /**
+   * Detect one model's reasoning levels.
+   *
+   * A write on the probe route, beside its `refresh`: the probe endpoint owns
+   * detection, and the account route owns the pool. Returns nothing — the
+   * re-read afterwards is what updates the row.
+   */
+  const probeAction = useCallback((variant: WorkBuddyCardVariant, body: { action: 'probe', model: string } | { action: 'clear' }): void => {
+    const key = keyFor(variant)
+    if (key === undefined) return
+    setBusy(true)
+    setError(undefined)
+    void fetch(variant.probePath, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-WorkBuddy-Probe-Key': key },
+      credentials: 'same-origin',
+      body: JSON.stringify(body),
+    })
+      .then(async response => {
+        const value: unknown = await response.json().catch(() => undefined)
+        if (!response.ok) {
+          setError(`HTTP ${String(response.status)}`)
+        } else if (typeof value === 'object' && value !== null && 'state' in value && value.state === 'unavailable') {
+          // A detection that spent credit and could not finish has to say why;
+          // silence would look like the button did nothing. The route's failure
+          // state is `unavailable`, which is worth naming here — the obvious
+          // guess of `failed` is a *different* action's state and would swallow
+          // every real reason.
+          setError(String((value as Record<string, unknown>)['reason'] ?? t('requestFailed')))
+        }
+        await readAll()
+      })
+      .catch((cause: unknown) => { setError(cause instanceof Error ? cause.message : t('requestFailed')) })
+      .finally(() => { if (mounted.current) setBusy(false) })
+  }, [keyFor, readAll, t])
+
   const accountAction = useCallback((variant: WorkBuddyCardVariant, action: WorkBuddyAccountAction): void => {
     setError(undefined)
     setBusy(true)
@@ -946,6 +1101,18 @@ export function WorkBuddySettingsPage({ t }: WorkBuddySettingsPageProps): React.
       })
       .finally(() => { if (mounted.current) setBusy(false) })
   }, [readAll, run, t])
+
+  /**
+   * This product's detection state, when the document carries one.
+   *
+   * Read off the document rather than narrowed through `status`, for the same
+   * reason the account section is: `probe` is optional, and a narrowed union
+   * loses it.
+   */
+  const probeFor = useCallback((variant: WorkBuddyCardVariant): WorkBuddyWebProbeSection | undefined => {
+    const status = statuses[variant.id]
+    return status === undefined || !('probe' in status) ? undefined : status.probe
+  }, [statuses])
 
   /**
    * Every product's accounts in one list, each tagged with its product.
@@ -982,10 +1149,13 @@ export function WorkBuddySettingsPage({ t }: WorkBuddySettingsPageProps): React.
             key={variant.id}
             variant={variant}
             status={statuses[variant.id]}
+            probe={probeFor(variant)}
             busy={busy}
             t={t}
             onContext={(model, length) => { accountAction(variant, { action: 'context', model, length }) }}
             onRefresh={() => { refreshModels(variant) }}
+            onDetect={model => { probeAction(variant, { action: 'probe', model }) }}
+            onClearProbe={() => { probeAction(variant, { action: 'clear' }) }}
           />
         ))}
       </div>
