@@ -317,6 +317,31 @@ export class WorkBuddyCredentialStore {
     return this.ownPath
   }
 
+  /**
+   * The desktop app's own credential, ignoring the plugin-owned copy.
+   *
+   * Used by the account pool's capture step: the pool wants *the app's current
+   * sign-in* so it can hold it as an ordinary long-lived member, not the
+   * plugin's rotated copy (which is already in the pool under the same
+   * identity). Returns undefined when the app is signed out, and throws only
+   * for a diagnosable problem such as a region mismatch.
+   */
+  async desktopCredential(): Promise<WorkBuddyCredential | undefined> {
+    const credential = await this.readDesktop()
+    if (credential === undefined) return undefined
+    if (this.variant !== undefined) {
+      const region = regionOf(credential.domain)
+      if (region !== this.variant.region) {
+        throw new Error(
+          `${this.variant.displayName} received a ${region === 'cn' ? 'WorkBuddy (CN)' : 'WorkBuddy AI'} credential`
+          + ` in its desktop file (domain ${JSON.stringify(credential.domain)});`
+          + ` point ${this.variant.env} at the ${this.variant.appName} sign-in, or remove the mismatched file`,
+        )
+      }
+    }
+    return credential
+  }
+
   /** Read the freshest stored credential without refreshing anything. */
   async current(): Promise<WorkBuddyCredential | undefined> {
     const [desktop, own] = await Promise.all([this.readDesktop(), this.readOwn()])

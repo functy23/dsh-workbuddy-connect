@@ -18,10 +18,10 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { Readable } from 'node:stream'
-import type { WorkBuddyCredentialStore } from './auth.ts'
+import type { WorkBuddyCredential } from './auth.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
-import { prepareChatBody, WorkBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
+import { prepareChatBody, type UpstreamErrorKind, type WorkBuddyChatResult } from './upstream.ts'
 
 /** Minimal logger surface the plugin context already provides. */
 export interface ShimLogger {
@@ -39,19 +39,53 @@ export interface WorkBuddyShim {
    * The per-process shared secret the plugin's own client must carry as
    * `Authorization: Bearer <token>`. Lives only in memory; the adapter
    * resolves this instead of the upstream access token, because the shim
-   * resolves the real credential itself via the store.
+   * resolves the real credential itself through the account pool.
    */
   token(): string
   /** Stop serving and destroy open connections. */
   close(): Promise<void>
 }
 
+/**
+ * Whatever sends one prepared chat body upstream.
+ *
+ * The shim deliberately knows nothing about accounts: it hands the body to a
+ * sender and relays the answer. In production the sender is the pool's
+ * rotation (which may try several accounts before answering); in a test it is
+ * a stub, or {@link createStoreSender} for the single-credential shape this
+ * plugin used before the pool existed.
+ */
+export interface WorkBuddyChatSender {
+  send(body: string, signal?: AbortSignal): Promise<WorkBuddyChatResult>
+}
+
 /** Constructor dependencies. */
 export interface WorkBuddyShimOptions {
-  store: WorkBuddyCredentialStore
-  client: Pick<WorkBuddyUpstreamClient, 'chatStream'>
+  sender: WorkBuddyChatSender
   catalog: WorkBuddyCatalog
   logger?: ShimLogger
+}
+
+/**
+ * A sender backed by one credential store, for tests and for any caller that
+ * wants the pre-pool behaviour: resolve the single stored credential, send
+ * once, report the classified failure unchanged.
+ */
+export function createStoreSender(options: {
+  store: { resolve(): Promise<WorkBuddyCredential> }
+  client: { chatStream(credential: WorkBuddyCredential, body: string, signal?: AbortSignal): Promise<WorkBuddyChatResult> }
+}): WorkBuddyChatSender {
+  return {
+    async send(body, signal) {
+      let credential
+      try {
+        credential = await options.store.resolve()
+      } catch (error: unknown) {
+        return { ok: false, status: 0, kind: 'session_dead', message: String(error) }
+      }
+      return options.client.chatStream(credential, body, signal)
+    },
+  }
 }
 
 const REQUEST_BODY_LIMIT = 64 * 1024 * 1024
@@ -103,16 +137,16 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
 
 /**
  * Start the loopback endpoint. Requests carry any bearer; the loopback bind
- * is the boundary, and the upstream credential comes from the store alone.
+ * is the boundary, and the upstream credential is chosen by the sender alone.
  */
 export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShim {
-  const { store, client, catalog } = options
+  const { sender, catalog } = options
   const logger = options.logger
 
   // Per-process shared secret. Lives only in memory; the adapter resolves it
   // as the OpenAI apiKey, which pi-ai sends as `Authorization: Bearer ...`.
-  // The shim never forwards it upstream — the real credential comes from the
-  // store. A local attacker who can hit the port still cannot forge this.
+  // The shim never forwards it upstream — the real credential is chosen by
+  // the sender. A local attacker who can hit the port still cannot forge this.
   const SHARED_SECRET = randomBytes(32).toString('base64url')
 
   /** Constant-time bearer check; absent or mismatched bearers are rejected. */
@@ -202,26 +236,27 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       writeOpenAIError(res, 415, 'unsupported_media_type', 'Content-Type must be application/json')
       return
     }
-    let credential
-    try {
-      credential = await store.resolve()
-    } catch (error: unknown) {
-      writeOpenAIError(res, 401, 'not_signed_in', String(error))
-      return
-    }
-
     const raw = (await readBody(req)).toString('utf8')
     const prepared = prepareChatBody(raw)
 
     const controller = new AbortController()
     req.on('close', () => controller.abort())
-    const result = await client.chatStream(credential, prepared, controller.signal)
+    // The sender owns account selection and any retry; by the time it answers
+    // with a failure, either nothing was written to the client (the retries
+    // happen before the first byte) or the stream had already started, which
+    // the sender reports rather than replaying.
+    const result = await sender.send(prepared, controller.signal)
 
     if (!result.ok) {
+      const status = KIND_STATUS[result.kind]
+      if (result.retryAfter !== undefined) res.setHeader('Retry-After', result.retryAfter)
+      // A request that ran out of accounts is reported as a sign-in problem
+      // rather than as an upstream refusal, because that is what it is.
+      const type = status === 401 ? 'not_signed_in' : result.kind
       writeOpenAIError(
         res,
-        KIND_STATUS[result.kind],
-        result.kind,
+        status,
+        type,
         `workbuddy upstream ${result.kind} (http ${result.status}): ${result.message.slice(0, 400)}`,
       )
       return

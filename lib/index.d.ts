@@ -1,6 +1,7 @@
 import z from "@deepseek-ai/schemastery";
 import "@earendil-works/pi-ai";
 import { PiAiAdapter } from "@deepseek-ai/dsh-llm-pi-ai";
+import { IncomingMessage, ServerResponse } from "node:http";
 import { Context } from "@deepseek-ai/cordis";
 import { SettingsNamespace } from "@deepseek-ai/dsh-settings";
 import { AttachmentStore } from "@deepseek-ai/dsh-attachment";
@@ -233,6 +234,14 @@ type WorkBuddyChatResult = {
   status: number;
   kind: UpstreamErrorKind;
   message: string;
+  /**
+   * The upstream's own `Retry-After`, verbatim, when it sent one.
+   *
+   * Carried rather than parsed here because the value's meaning is the
+   * caller's business: the rotation layer prefers it over its own backoff
+   * schedule, and the shim forwards it to the harness on a final failure.
+   */
+  retryAfter?: string;
 };
 /**
  * Reduce an upstream credits string to its language-neutral display form.
@@ -253,6 +262,20 @@ declare function normalizeCredits(credits: string | undefined): string | undefin
 declare function classifyUpstreamError(status: number, body: string): UpstreamErrorKind;
 /** Region for a login domain; an empty domain means CN (matching upstream tooling). */
 declare function regionOf(domain: string): WorkBuddyRegion;
+/**
+ * The chat (and login) base for a login domain.
+ *
+ * Exported because the QR sign-in flow needs the same answer *before* a
+ * credential exists: it knows only which variant it is signing into. Sharing
+ * one function is what keeps a QR sign-in from ever being pointed at the other
+ * region's endpoint — the mistake that would hand a CN account's token to the
+ * international gateway.
+ */
+declare function chatBaseForDomain(domain: string): string;
+/** The chat (and login) base for a region, for callers with no credential yet. */
+declare function chatBaseForRegion(region: WorkBuddyRegion): string;
+/** The Origin/Referer pair the upstream expects for a region. */
+declare function originForRegion(region: WorkBuddyRegion): string;
 /**
  * Normalize an OpenAI chat-completions body for the WorkBuddy upstream:
  * force `stream: true` (the upstream rejects non-streaming), flatten
@@ -414,6 +437,16 @@ interface WorkBuddyVariant {
   desktopFilename: string;
   /** Basename of the plugin-owned credential copy under `$DSH_HOME`. */
   ownFilename: string;
+  /**
+   * Basename of the plugin-owned account-pool file under `$DSH_HOME`.
+   *
+   * One pool per variant, for the same reason the catalogs are split: the two
+   * products are separate subscriptions, and an account signed into one has no
+   * meaning for the other. The pool holds that variant's desktop-app account
+   * plus every account added by QR, so a user signed into both apps gets two
+   * independent rotations.
+   */
+  accountFilename: string;
   /** Basename of the plugin-owned probe-record file under `$DSH_HOME`. */
   probeFilename: string;
   /**
@@ -426,6 +459,8 @@ interface WorkBuddyVariant {
   catalogFilename: string;
   /** Same-origin status route consumed by this variant's card. */
   statusPath: string;
+  /** Same-origin account-control route consumed by this variant's card. */
+  accountPath: string;
   /** Same-origin probe-control route consumed by this variant's card. */
   probePath: string;
 }
@@ -541,6 +576,16 @@ declare class WorkBuddyCredentialStore {
   desktopAuthPath(): string | undefined;
   /** The plugin-owned copy path, for diagnostics. */
   ownAuthPath(): string;
+  /**
+   * The desktop app's own credential, ignoring the plugin-owned copy.
+   *
+   * Used by the account pool's capture step: the pool wants *the app's current
+   * sign-in* so it can hold it as an ordinary long-lived member, not the
+   * plugin's rotated copy (which is already in the pool under the same
+   * identity). Returns undefined when the app is signed out, and throws only
+   * for a diagnosable problem such as a region mismatch.
+   */
+  desktopCredential(): Promise<WorkBuddyCredential | undefined>;
   /** Read the freshest stored credential without refreshing anything. */
   current(): Promise<WorkBuddyCredential | undefined>;
   /**
@@ -754,22 +799,46 @@ interface WorkBuddyShim {
    * The per-process shared secret the plugin's own client must carry as
    * `Authorization: Bearer <token>`. Lives only in memory; the adapter
    * resolves this instead of the upstream access token, because the shim
-   * resolves the real credential itself via the store.
+   * resolves the real credential itself through the account pool.
    */
   token(): string;
   /** Stop serving and destroy open connections. */
   close(): Promise<void>;
 }
+/**
+ * Whatever sends one prepared chat body upstream.
+ *
+ * The shim deliberately knows nothing about accounts: it hands the body to a
+ * sender and relays the answer. In production the sender is the pool's
+ * rotation (which may try several accounts before answering); in a test it is
+ * a stub, or {@link createStoreSender} for the single-credential shape this
+ * plugin used before the pool existed.
+ */
+interface WorkBuddyChatSender {
+  send(body: string, signal?: AbortSignal): Promise<WorkBuddyChatResult>;
+}
 /** Constructor dependencies. */
 interface WorkBuddyShimOptions {
-  store: WorkBuddyCredentialStore;
-  client: Pick<WorkBuddyUpstreamClient, 'chatStream'>;
+  sender: WorkBuddyChatSender;
   catalog: WorkBuddyCatalog;
   logger?: ShimLogger;
 }
 /**
+ * A sender backed by one credential store, for tests and for any caller that
+ * wants the pre-pool behaviour: resolve the single stored credential, send
+ * once, report the classified failure unchanged.
+ */
+declare function createStoreSender(options: {
+  store: {
+    resolve(): Promise<WorkBuddyCredential>;
+  };
+  client: {
+    chatStream(credential: WorkBuddyCredential, body: string, signal?: AbortSignal): Promise<WorkBuddyChatResult>;
+  };
+}): WorkBuddyChatSender;
+/**
  * Start the loopback endpoint. Requests carry any bearer; the loopback bind
- * is the boundary, and the upstream credential comes from the store alone.
+ * is the boundary, and the upstream credential is chosen by the sender alone.
  */
 declare function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShim;
 //#endregion
@@ -812,6 +881,623 @@ interface WorkBuddyAdapter {
  * `modelErrors` since 0.1.5-alpha.2 (#12).
  */
 declare function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBuddyAdapter;
+//#endregion
+//#region src/account-pool.d.ts
+/** Basename of the CN variant's account-pool file inside the Harness home. */
+declare const WORKBUDDY_ACCOUNTS_FILENAME = ".workbuddy-accounts.json";
+/** Why an account was benched. */
+type WorkBuddyCooldownReason = 'rate' | 'credit' | 'session';
+/**
+ * A benching: until when, and why.
+ *
+ * `strikes` is the count of consecutive *cooldown-causing* failures, so the
+ * backoff can grow with repetition and reset on the first success. It is kept
+ * on the record (rather than in memory) so a restart does not hand a
+ * repeatedly-limited account a fresh, short cooldown.
+ */
+interface WorkBuddyCooldown {
+  /** Epoch ms after which the account is eligible again. */
+  untilMs: number;
+  reason: WorkBuddyCooldownReason;
+  /** Consecutive failures that produced this cooldown; 1 on the first. */
+  strikes: number;
+  /** When this cooldown was last (re)computed, for display. */
+  atMs: number;
+}
+/** How an account entered the pool. */
+type WorkBuddyAccountOrigin = 'desktop' | 'qr';
+/** One account the plugin may send a request as. */
+interface WorkBuddyAccount {
+  /** Stable identity: `uid:enterpriseId`. The pool's key. */
+  id: string;
+  uid: string;
+  enterpriseId?: string;
+  nickname?: string;
+  /** Optional user-set label, shown instead of the nickname when present. */
+  label?: string;
+  /** Login domain; decides the upstream region for every request. */
+  domain: string;
+  accessToken: string;
+  refreshToken: string;
+  /** Access-token expiry, epoch ms; 0 means "unknown". */
+  expiresAtMs: number;
+  /** Refresh-token expiry when the source declares one. */
+  refreshExpiresAtMs?: number;
+  origin: WorkBuddyAccountOrigin;
+  /**
+   * Whether rotation may pick this account. A user toggle, not a health
+   * signal: health is {@link WorkBuddyCooldown}, which expires on its own.
+   */
+  enabled: boolean;
+  /**
+   * Epoch ms of the last request this account served, or 0 for never. This is
+   * the whole of the selection policy: least-recently-used wins, which spreads
+   * load evenly without a cursor that a restart would lose.
+   */
+  lastUsedAtMs: number;
+  /** Present only while the account is benched. */
+  cooldown?: WorkBuddyCooldown;
+  /**
+   * Set when the upstream refused the session outright and the refresh token
+   * could not revive it. Kept as a flag rather than a deletion: the account
+   * still shows in the list (so the user can see what happened and delete it),
+   * and it never participates in rotation again.
+   */
+  sessionDead?: boolean;
+  addedAtMs: number;
+  updatedAtMs: number;
+}
+/** What an upsert wants to write; identity and bookkeeping are derived. */
+interface WorkBuddyAccountInput {
+  uid: string;
+  enterpriseId?: string;
+  nickname?: string;
+  domain: string;
+  accessToken: string;
+  refreshToken: string;
+  expiresAtMs: number;
+  refreshExpiresAtMs?: number;
+  origin: WorkBuddyAccountOrigin;
+}
+/** Outcome of an upsert, for the "this account is already in the pool" notice. */
+interface WorkBuddyUpsertResult {
+  account: WorkBuddyAccount;
+  /** True when this identity was not in the pool before. */
+  created: boolean;
+  /** True when the stored tokens actually changed. */
+  updated: boolean;
+}
+/** The backoff an account earns after `strikes` consecutive failures. */
+declare function cooldownDurationMs(reason: WorkBuddyCooldownReason, strikes: number): number;
+/** Stable identity key for a credential, shared with catalogs and probes. */
+declare function accountIdOf(uid: string, enterpriseId?: string): string;
+/** The identity key of a credential. */
+declare function credentialAccountId(credential: Pick<WorkBuddyCredential, 'uid' | 'enterpriseId'>): string;
+/** Project one stored account back into the credential shape the wire layer takes. */
+declare function credentialOf(account: WorkBuddyAccount): WorkBuddyCredential;
+/** Options for {@link WorkBuddyAccountPool}. */
+interface WorkBuddyAccountPoolOptions {
+  variant: WorkBuddyVariant;
+  /** Explicit pool-file path, overriding the `$DSH_HOME` default. */
+  path?: string;
+}
+/** Pool-file path for one variant inside the Harness home. */
+declare function workbuddyAccountsPath(filename?: string): string;
+/**
+ * The account pool for one variant.
+ *
+ * Persistence is synchronous and whole-document: the file is small (a handful
+ * of accounts), every mutation is rare compared with a chat request, and a
+ * partial write is worse than a slow one. Writes go through a temp file plus
+ * rename, so a crash mid-write leaves the previous document intact.
+ *
+ * Every mutation writes; every read is served from memory after the first
+ * load. The in-memory copy is the authority during a run, so a failed write
+ * never makes the pool forget an account the user just added (it just will not
+ * survive a restart).
+ */
+declare class WorkBuddyAccountPool {
+  private readonly variant;
+  private readonly path;
+  private accounts;
+  constructor(options: WorkBuddyAccountPoolOptions);
+  /** Resolved pool-file path, for diagnostics and tests. */
+  filePath(): string;
+  /** Which variant this pool belongs to. */
+  variantId(): string;
+  /** Every account, in rotation order. */
+  list(): readonly WorkBuddyAccount[];
+  /** One account by identity. */
+  get(id: string): WorkBuddyAccount | undefined;
+  /** Whether the pool could serve a request right now (ignoring cooldowns). */
+  hasEnabled(): boolean;
+  /**
+   * Add an account, or refresh the tokens of one already present.
+   *
+   * The identity is `uid:enterpriseId`, so a second sign-in as the same user
+   * updates the stored credential instead of creating a duplicate row — which
+   * is what the card reports as "already in the pool, tokens updated".
+   * `origin` is only applied on create: an account first captured from the
+   * desktop app keeps that provenance even if it is later re-added by QR, so
+   * the list never rewrites the user's mental model of where it came from.
+   */
+  upsert(input: WorkBuddyAccountInput): WorkBuddyUpsertResult;
+  /** Merge a token refresh into a stored account. */
+  updateTokens(id: string, tokens: {
+    accessToken: string;
+    refreshToken?: string;
+    expiresAtMs?: number;
+    domain?: string;
+    refreshExpiresAtMs?: number;
+  }): WorkBuddyAccount | undefined;
+  /** Remove one account. */
+  remove(id: string): boolean;
+  /** Enable or disable one account. */
+  setEnabled(id: string, enabled: boolean): boolean;
+  /** Set or clear the user's label for one account. */
+  setLabel(id: string, label: string | undefined): boolean;
+  /**
+   * Reorder the pool. Ids not named keep their relative order after the named
+   * ones, so a stale client cannot drop an account it did not know about.
+   */
+  reorder(ids: readonly string[]): void;
+  /** Mark an account as having just served a request. */
+  markUsed(id: string): void;
+  /**
+   * Bench an account.
+   *
+   * `strikes` increments when the previous benching is still in force (the
+   * account failed again as soon as it was retried), and restarts at 1
+   * otherwise. That is what makes the backoff grow under sustained limiting
+   * and reset once the account has genuinely recovered.
+   *
+   * @param retryAfterMs - upstream's own `Retry-After`, which wins over the
+   *   schedule: the provider knows its window better than any backoff we pick.
+   */
+  cooldown(id: string, reason: WorkBuddyCooldownReason, retryAfterMs?: number): WorkBuddyCooldown | undefined;
+  /** Clear a benching after a success. */
+  clearCooldown(id: string): void;
+  /** Mark an account's session as permanently dead. */
+  markSessionDead(id: string): void;
+  /** Whether an account may be picked right now. */
+  isAvailable(account: WorkBuddyAccount, now?: number): boolean;
+  /**
+   * The next account to try, excluding ids already tried in this request.
+   *
+   * Least-recently-used wins, with pool order as the tiebreak. LRU rather than
+   * round-robin because a restart, a new sign-in, or a user reorder all reset
+   * a cursor but leave "when did this account last work" meaningful.
+   *
+   * @param tried - identities already attempted for the request in flight.
+   */
+  next(tried: ReadonlySet<string>, now?: number): WorkBuddyAccount | undefined;
+  /**
+   * The account the plugin presents as "this variant's account" — the one used
+   * for the model catalog, the credit figure on the card, and reasoning probes.
+   *
+   * Preferring the desktop app's current account keeps every one of those
+   * answers stable while the user is signed in there, which is what makes the
+   * card's numbers mean something. Rotation is deliberately separate: a chat
+   * request may run as any healthy account, but "who am I signed in as" does
+   * not flicker per request.
+   *
+   * @param preferredId - identity of the desktop app's current account, if any.
+   */
+  primary(preferredId?: string, now?: number): WorkBuddyAccount | undefined;
+  private mutate;
+  private load;
+  private persist;
+}
+//#endregion
+//#region src/qr-login.d.ts
+/** A freshly minted QR sign-in: the state to poll and the URL to render. */
+interface WorkBuddyQrChallenge {
+  state: string;
+  /** The URL the QR code must encode; opening it on a phone starts the sign-in. */
+  authUrl: string;
+  /** When this challenge stops being pollable, epoch ms. */
+  expiresAtMs: number;
+}
+/** Result of one poll. */
+type WorkBuddyQrPoll = {
+  status: 'waiting';
+} | {
+  status: 'expired';
+} | {
+  status: 'invalid';
+} | {
+  status: 'ready';
+  uid: string;
+  enterpriseId?: string;
+  nickname?: string;
+  domain: string;
+  accessToken: string;
+  refreshToken: string;
+  expiresAtMs: number;
+};
+/** Constructor dependencies; the variant fixes which region is signed into. */
+interface WorkBuddyQrLoginOptions {
+  variant: WorkBuddyVariant;
+  /** Injectable fetch, for tests. Defaults to the global `fetch`. */
+  fetch?: typeof fetch;
+  /** Injectable clock, for tests. */
+  now?: () => number;
+}
+/**
+ * One QR sign-in flow for one variant.
+ *
+ * Instances are cheap and stateless beyond the outstanding-state set; the
+ * plugin keeps one per variant.
+ */
+declare class WorkBuddyQrLogin {
+  private readonly variant;
+  /**
+   * Injectable fetch. Left undefined in production so {@link send} resolves
+   * `globalThis.fetch` per call: a test that stubs the global after
+   * constructing the flow (which is how every other test in this plugin works)
+   * then still reaches the stub, and a proxy or instrumentation installed later
+   * is picked up rather than bypassed.
+   */
+  private readonly injectedFetch;
+  private readonly now;
+  /** States this process minted, and when each was created. */
+  private readonly states;
+  constructor(options: WorkBuddyQrLoginOptions);
+  /** The region every request here goes to, from the variant descriptor. */
+  private region;
+  private base;
+  /** One plugin-auth request, through the injected or the ambient fetch. */
+  private send;
+  /** The headers the official CLI sends; the upstream checks the UA. */
+  private headers;
+  /**
+   * Mint a challenge: the QR payload and the state to poll.
+   *
+   * The state is remembered locally. The upstream also validates it, but a
+   * local record is what lets {@link poll} answer `invalid` for a state that
+   * was never minted here instead of forwarding an arbitrary value upstream.
+   */
+  start(): Promise<WorkBuddyQrChallenge>;
+  /**
+   * Poll one challenge.
+   *
+   * A non-zero business code is the *normal* "still waiting" answer
+   * (`11217:login ing...`), not a failure, so it is reported as `waiting`
+   * rather than thrown. The account call is what turns a token into the uid
+   * the pool keys on; until it answers a uid, the sign-in is not complete.
+   */
+  poll(state: string): Promise<WorkBuddyQrPoll>;
+  /** Drop an outstanding challenge (the user closed the dialog). */
+  cancel(state: string): void;
+  /** The domain a variant's credentials carry when the upstream omits one. */
+  private defaultDomain;
+  private prune;
+}
+/** A random opaque id, for logging a challenge without exposing its state. */
+declare function challengeTag(): string;
+//#endregion
+//#region src/account-service.d.ts
+/** One account as the browser renders it. Never carries token material. */
+interface WorkBuddyWebAccount {
+  id: string;
+  uid: string;
+  /** User label when set, else the upstream nickname, else a short uid. */
+  name: string;
+  label?: string;
+  nickname?: string;
+  origin: 'desktop' | 'qr';
+  /** Login domain this account speaks to; the card reports the region from it. */
+  domain: string;
+  enabled: boolean;
+  /** Whether rotation may pick it right now (enabled, not benched, not dead). */
+  available: boolean;
+  /** Remaining credit, when the last lookup succeeded. */
+  credits?: number;
+  creditsError?: string;
+  /** When `credits` was fetched, epoch ms. */
+  creditsAtMs?: number;
+  /** Access-token expiry, epoch ms; 0 means the source did not say. */
+  expiresAtMs: number;
+  /** Set when the upstream refused the session and a refresh could not fix it. */
+  sessionDead?: boolean;
+  /** Present while the account is benched. */
+  cooldown?: {
+    /** Epoch ms after which it will be tried again. */
+    untilMs: number;
+    reason: 'rate' | 'credit' | 'session';
+    strikes: number;
+  };
+  lastUsedAtMs: number;
+  addedAtMs: number;
+}
+/** What the account service reports about one variant. */
+interface WorkBuddyAccountSnapshot {
+  accounts: readonly WorkBuddyWebAccount[];
+  /** Identity of the account the catalog/credits are read from, when any. */
+  primary?: string;
+  /** Identity of the desktop app's current account, when it is in the pool. */
+  desktop?: string;
+}
+/** Options for {@link WorkBuddyAccountService}. */
+interface WorkBuddyAccountServiceOptions {
+  variant: WorkBuddyVariant;
+  pool: WorkBuddyAccountPool;
+  /** Reads the desktop app's own credential file (never writes it). */
+  store: Pick<WorkBuddyCredentialStore, 'desktopCredential' | 'current'>;
+  client: Pick<WorkBuddyUpstreamClient, 'fetchCredits' | 'refreshToken'>;
+  qr: WorkBuddyQrLogin;
+  logger?: {
+    warn(...args: unknown[]): void;
+  };
+  /** Injectable clock, for tests. */
+  now?: () => number;
+}
+/** One cached credit lookup. */
+interface CreditEntry {
+  total?: number;
+  error?: string;
+  atMs: number;
+}
+/**
+ * Owns the pool's network-facing behaviour for one variant.
+ *
+ * Credit figures are cached per account for a minute. That matters because the
+ * floating window polls while a conversation is open, and an uncached lookup
+ * would mean one billing request per account per poll — real traffic against
+ * the user's own quota, for a number that changes slowly.
+ */
+declare class WorkBuddyAccountService {
+  private readonly variant;
+  private readonly pool;
+  private readonly store;
+  private readonly client;
+  private readonly qr;
+  private readonly logger;
+  private readonly now;
+  private readonly credits;
+  private readonly inflight;
+  constructor(options: WorkBuddyAccountServiceOptions);
+  /**
+   * Capture the desktop app's current sign-in into the pool.
+   *
+   * Called at startup and on every credential sweep, which is what makes the
+   * desktop account an ordinary pool member: it is upserted (so a token
+   * rotation in the app is picked up) but never *required* — signing out of
+   * the app leaves the captured account in place, which is the behaviour the
+   * whole feature depends on.
+   *
+   * @returns the captured account, or undefined when the app is not signed in.
+   */
+  captureDesktop(): Promise<WorkBuddyAccount | undefined>;
+  /**
+   * Capture a credential that came from anywhere into the pool.
+   *
+   * The region is not re-checked here: {@link WorkBuddyCredentialStore} already
+   * refuses a credential belonging to the other product, and the QR flow checks
+   * its own answer before it gets this far.
+   */
+  capture(credential: WorkBuddyCredential): WorkBuddyAccount;
+  /** The desktop app's account identity, when the app is signed in. */
+  desktopIdentity(): Promise<string | undefined>;
+  /**
+   * The credential the catalog, credits, and probes run as.
+   *
+   * The desktop app's current account wins while it is usable, so the card's
+   * account name and credit figure stay stable while the user is signed in
+   * there; otherwise the first available pool member answers. Returning
+   * undefined means the variant has nothing to work with at all, which is what
+   * hides its model group.
+   */
+  primaryCredential(): Promise<WorkBuddyCredential | undefined>;
+  /** The identity {@link primaryCredential} would answer for. */
+  primaryIdentity(): Promise<string | undefined>;
+  /**
+   * Refresh an account whose access token is at or near expiry.
+   *
+   * The pool's own copy is the one that gets updated, so a refresh survives a
+   * restart. A failed refresh is not fatal: a token that has not actually
+   * expired yet still works, which is the same tolerance the single-account
+   * store had.
+   */
+  private refreshIfStale;
+  /** Whether the variant has any account at all (enabled, dead, benched or not). */
+  hasAccounts(): boolean;
+  /** Whether the variant has at least one account rotation may use. */
+  hasUsableAccount(): boolean;
+  /**
+   * One account's remaining credit, cached.
+   *
+   * @param force - bypass the cache, for a user-initiated refresh.
+   */
+  creditsFor(account: WorkBuddyAccount, force?: boolean): Promise<CreditEntry>;
+  /** Forget a cached credit figure, e.g. after a request spent some. */
+  invalidateCredits(id?: string): void;
+  /**
+   * The snapshot the card's account tab and the floating window render.
+   *
+   * @param withCredits - whether to include per-account balances. The floating
+   *   window asks for them; a write confirmation does not need them and should
+   *   not pay for N billing requests.
+   * @param forceCredits - bypass the credit cache.
+   */
+  snapshot(options?: {
+    withCredits?: boolean;
+    forceCredits?: boolean;
+  }): Promise<WorkBuddyAccountSnapshot>;
+  /** Add one QR sign-in to the pool. */
+  addQrAccount(poll: Extract<Awaited<ReturnType<WorkBuddyQrLogin['poll']>>, {
+    status: 'ready';
+  }>): {
+    account: WorkBuddyAccount;
+    created: boolean;
+    updated: boolean;
+  };
+  /** Identity key for a uid/enterprise pair, for callers holding raw values. */
+  idOf(uid: string, enterpriseId?: string): string;
+}
+//#endregion
+//#region src/status-paths.d.ts
+/** One QR sign-in challenge, as the browser renders it. */
+interface WorkBuddyQrChallenge$1 {
+  /** Opaque state the browser echoes back when polling. */
+  state: string;
+  /** The URL the QR code encodes. */
+  authUrl: string;
+  /** When the challenge stops being valid, epoch ms. */
+  expiresAtMs: number;
+}
+/** Action requested from the account route. */
+type WorkBuddyAccountAction = {
+  action: 'add';
+} | {
+  action: 'poll';
+  state: string;
+} | {
+  action: 'cancel';
+  state: string;
+} | {
+  action: 'remove';
+  id: string;
+} | {
+  action: 'enable';
+  id: string;
+  enabled: boolean;
+} | {
+  action: 'label';
+  id: string;
+  label?: string;
+} | {
+  action: 'reorder';
+  ids: readonly string[];
+} | {
+  action: 'test';
+  id: string;
+} | {
+  action: 'refresh-credits';
+};
+/** What an account action answers with. */
+interface WorkBuddyAccountResult {
+  /** `ok` for every action that completed; otherwise a short reason. */
+  state: 'ok' | 'failed' | 'waiting' | 'expired' | 'invalid' | 'added';
+  reason?: string;
+  /** Present for `add`: the challenge to render as a QR code. */
+  challenge?: WorkBuddyQrChallenge$1;
+  /** Present for `poll`: the added account, once the scan completed. */
+  name?: string;
+  created?: boolean;
+  /** Present for `test`: whether a minimal streaming request succeeded. */
+  test?: {
+    ok: boolean;
+    message: string;
+  };
+}
+//#endregion
+//#region src/account-route.d.ts
+/** Constructor dependencies. */
+interface WorkBuddyAccountRouteOptions {
+  /** Execute one account action. Never receives raw credential material. */
+  handle: (action: WorkBuddyAccountAction) => Promise<WorkBuddyAccountResult>;
+  /**
+   * Route path to mount. Defaults to the CN variant's path so existing callers
+   * and tests keep their behaviour; the international variant passes its own.
+   */
+  path?: string;
+}
+/** Parse and shape-check an action; unknown fields are ignored, not trusted. */
+declare function parseAccountAction(text: string): WorkBuddyAccountAction | undefined;
+/**
+ * The control route's handler, extracted so tests can mount it on a bare
+ * server with a known key.
+ */
+declare function workBuddyAccountHandler(deps: WorkBuddyAccountRouteOptions, key: string): (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+/** Mount the POST account-control route on an optional webServer context. */
+declare function registerWorkBuddyAccountRoute(ctx: Context, deps: WorkBuddyAccountRouteOptions, key: string): void;
+//#endregion
+//#region src/account-cli.d.ts
+/** Render the pool as one text block per account. */
+declare function formatAccounts(options: {
+  variant: WorkBuddyVariant;
+  snapshot: Awaited<ReturnType<WorkBuddyAccountService['snapshot']>>;
+  pool: WorkBuddyAccountPool;
+  now?: number;
+}): string;
+/** The machine-readable shape, secret-free by construction. */
+declare function accountsJson(options: {
+  variant: WorkBuddyVariant;
+  snapshot: Awaited<ReturnType<WorkBuddyAccountService['snapshot']>>;
+  pool: WorkBuddyAccountPool;
+}): Record<string, unknown>;
+//#endregion
+//#region src/rotation.d.ts
+/** What the caller learns about one completed rotation. */
+interface WorkBuddyRotationOutcome {
+  /** The upstream answer to relay. */
+  result: WorkBuddyChatResult;
+  /** Identities tried, in order; the last one produced `result`. */
+  attempts: readonly string[];
+  /** The account whose credential produced the answer, when one did. */
+  account?: WorkBuddyAccount;
+  /**
+   * Set when the pool could not supply any account at all (empty, or every
+   * member disabled / benched / dead). `result` is then a synthesized
+   * `session_dead` answer so the shim's status mapping still applies.
+   */
+  exhausted?: true;
+}
+/** Constructor dependencies. */
+interface WorkBuddyRotationOptions {
+  pool: WorkBuddyAccountPool;
+  client: Pick<WorkBuddyUpstreamClient, 'chatStream' | 'refreshToken'>;
+  /**
+   * Called after a token refresh lands, so the pool file and any cached
+   * credential view agree. Without it a refresh would be lost on restart and
+   * every later request would pay for another refresh.
+   */
+  onRefreshed?: (account: WorkBuddyAccount, credential: WorkBuddyCredential) => void;
+  logger?: {
+    warn(...args: unknown[]): void;
+  };
+}
+/**
+ * Parse an upstream `Retry-After`, which may be seconds or an HTTP date.
+ * Returns undefined when absent or unparsable.
+ */
+declare function parseRetryAfter(value: string | null | undefined, now?: number): number | undefined;
+/** Which cooldown class an upstream failure earns. */
+declare function cooldownReasonFor(kind: UpstreamErrorKind): WorkBuddyCooldownReason | undefined;
+/** Whether another account could plausibly answer differently. */
+declare function isAccountScoped(kind: UpstreamErrorKind): boolean;
+/**
+ * Send one chat body, rotating accounts on account-scoped failures.
+ *
+ * The body is already prepared for the wire by the caller: this layer chooses
+ * *who* sends it, never *what* is sent, so a retry is byte-identical to the
+ * attempt before it.
+ */
+declare class WorkBuddyRotation {
+  private readonly pool;
+  private readonly client;
+  private readonly onRefreshed;
+  private readonly logger;
+  constructor(options: WorkBuddyRotationOptions);
+  /**
+   * Attempt the request until an account answers, or the pool runs out.
+   *
+   * @param body - the prepared JSON body.
+   * @param signal - the caller's abort signal; an aborted request stops the
+   *   whole rotation rather than moving on to another account.
+   */
+  send(body: string, signal?: AbortSignal): Promise<WorkBuddyRotationOutcome>;
+  /** Apply the cooldown a failure earns, with the upstream's own hint when given. */
+  private bench;
+  /**
+   * Refresh one account's access token, persisting the result.
+   *
+   * A refresh with no stored refresh token cannot succeed and is reported as
+   * such rather than attempted.
+   */
+  private tryRefresh;
+}
 //#endregion
 //#region src/catalog-store.d.ts
 /** Basename of the CN variant's saved catalog inside the Harness home. */
@@ -1034,6 +1720,12 @@ interface Config {
    * until the user explicitly agrees.
    */
   probeConsent?: boolean;
+  /**
+   * Whether the floating account window is drawn in the conversation. On by
+   * default: it is the only place the pool's state is visible while chatting,
+   * which is exactly when a rotation matters.
+   */
+  floatingAccounts?: boolean;
 }
 declare const Config: z<Config>;
 /**
@@ -1048,4 +1740,4 @@ declare const Config: z<Config>;
  */
 declare function apply(ctx: Context, config: Config): void;
 //#endregion
-export { AI_VARIANT, type AppVersionInfo, CN_VARIANT, Config, FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, PROBE_EFFORT_CANDIDATES, type ProbeAttempt, type ProbeOutcome, type ProbeSender, type UpstreamErrorKind, WORKBUDDY_AI_SETTINGS_NS, WORKBUDDY_APP_VERSION_FILENAME, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_CATALOG_FILENAME, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_PROBE_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, WORKBUDDY_VARIANTS, type WorkBuddyAdapter, type WorkBuddyAppVersionSource, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyCatalogFetch, WorkBuddyCatalogStore, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyProbeRecord, WorkBuddyProbeService, type WorkBuddyProbeStatus, WorkBuddyProbeStore, type WorkBuddyProbeValidation, type WorkBuddyPromotion, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, type WorkBuddyVariant, appUserAgent, apply, classifyUpstreamError, clearHostHeartbeat, createWorkBuddyAdapter, createWorkBuddyShim, defaultDesktopAuthCandidates, defaultDesktopAuthPath, desktopAuthCandidatesFor, fingerprintModel, inject, installedAppVersion, isHeartbeatProcessAlive, modelWithCurrentPromotion, name, normalizeCredits, parseModelCatalog, parseWorkBuddyAuth, prepareChatBody, prepareInternationalChatBody, probeModel, processStartTimeMs, randomSentinel, readBundleVersion, readHostHeartbeat, regionOf, resolveAppVersion, validAppVersion, variantFor, workbuddyCatalogPath, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath, workbuddyProbePath };
+export { AI_VARIANT, type AppVersionInfo, CN_VARIANT, Config, FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, PROBE_EFFORT_CANDIDATES, type ProbeAttempt, type ProbeOutcome, type ProbeSender, type UpstreamErrorKind, WORKBUDDY_ACCOUNTS_FILENAME, WORKBUDDY_AI_SETTINGS_NS, WORKBUDDY_APP_VERSION_FILENAME, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_AUTH_FILE_ENV, WORKBUDDY_CATALOG_FILENAME, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_PROBE_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, WORKBUDDY_VARIANTS, type WorkBuddyAccount, type WorkBuddyAccountInput, type WorkBuddyAccountOrigin, WorkBuddyAccountPool, type WorkBuddyAccountPoolOptions, type WorkBuddyAccountRouteOptions, WorkBuddyAccountService, type WorkBuddyAccountServiceOptions, type WorkBuddyAccountSnapshot, type WorkBuddyAdapter, type WorkBuddyAppVersionSource, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyCatalogFetch, WorkBuddyCatalogStore, type WorkBuddyChatResult, type WorkBuddyChatSender, type WorkBuddyCooldown, type WorkBuddyCooldownReason, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyProbeRecord, WorkBuddyProbeService, type WorkBuddyProbeStatus, WorkBuddyProbeStore, type WorkBuddyProbeValidation, type WorkBuddyPromotion, type WorkBuddyQrChallenge, WorkBuddyQrLogin, type WorkBuddyQrLoginOptions, type WorkBuddyQrPoll, type WorkBuddyRefreshOutcome, WorkBuddyRotation, type WorkBuddyRotationOptions, type WorkBuddyRotationOutcome, type WorkBuddyShim, type WorkBuddyUpsertResult, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, type WorkBuddyVariant, type WorkBuddyWebAccount, accountIdOf, accountsJson, appUserAgent, apply, challengeTag, chatBaseForDomain, chatBaseForRegion, classifyUpstreamError, clearHostHeartbeat, cooldownDurationMs, cooldownReasonFor, createStoreSender, createWorkBuddyAdapter, createWorkBuddyShim, credentialAccountId, credentialOf, defaultDesktopAuthCandidates, defaultDesktopAuthPath, desktopAuthCandidatesFor, fingerprintModel, formatAccounts, inject, installedAppVersion, isAccountScoped, isHeartbeatProcessAlive, modelWithCurrentPromotion, name, normalizeCredits, originForRegion, parseAccountAction, parseModelCatalog, parseRetryAfter, parseWorkBuddyAuth, prepareChatBody, prepareInternationalChatBody, probeModel, processStartTimeMs, randomSentinel, readBundleVersion, readHostHeartbeat, regionOf, registerWorkBuddyAccountRoute, resolveAppVersion, validAppVersion, variantFor, workBuddyAccountHandler, workbuddyAccountsPath, workbuddyCatalogPath, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath, workbuddyProbePath };

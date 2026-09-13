@@ -12,6 +12,10 @@ export default defineConfig({
   },
   test: {
     include: ['tests/**/*.spec.ts'],
+    // Node by default: the host half is server code and most of the suite
+    // exercises it directly. The two specs that render a portal opt into jsdom
+    // with their own \`@vitest-environment\` pragma, so the DOM dependency stays
+    // scoped to the tests that need it.
     environment: 'node',
   },
 })

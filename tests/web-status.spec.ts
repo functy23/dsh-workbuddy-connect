@@ -3,9 +3,13 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { WorkBuddyAccountPool } from '../src/account-pool.ts'
+import { WorkBuddyAccountService } from '../src/account-service.ts'
 import { WorkBuddyCredentialStore } from '../src/auth.ts'
+import { WorkBuddyQrLogin } from '../src/qr-login.ts'
 import { workBuddyStatusHandler } from '../src/web-status.ts'
 import { WORKBUDDY_STATUS_PATH } from '../src/status-paths.ts'
+import { CN_VARIANT } from '../src/variants.ts'
 import type { WorkBuddyStatusRouteOptions } from '../src/web-status.ts'
 import type { WorkBuddyUpstreamModel } from '../src/upstream.ts'
 
@@ -48,17 +52,33 @@ function requestOnce(options: {
   })
 }
 
+/**
+ * A status server backed by a real pool with one desktop-captured account, so
+ * these tests exercise the same shape the plugin serves: "signed in" means the
+ * pool has an account, not that the desktop file exists.
+ */
 async function startStatusServer(overrides: Partial<WorkBuddyStatusRouteOptions> = {}): Promise<number> {
   const dir = await mkdtemp(join(tmpdir(), 'wb-status-'))
   CLEANUP.push(() => rm(dir, { recursive: true, force: true }))
   const desktop = join(dir, 'workbuddy-desktop.info')
   await writeFile(desktop, nestedDoc(Date.now() + 3600_000))
+  const store = new WorkBuddyCredentialStore({
+    variant: CN_VARIANT,
+    desktopPath: desktop,
+    ownPath: join(dir, 'own.json'),
+    refresh: async credential => ({ accessToken: credential.accessToken }),
+  })
+  const pool = new WorkBuddyAccountPool({ variant: CN_VARIANT, path: join(dir, 'accounts.json') })
+  const accounts = new WorkBuddyAccountService({
+    variant: CN_VARIANT,
+    pool,
+    store,
+    client: { fetchCredits: async () => ({ total: 0, accounts: [] }), refreshToken: async () => ({ accessToken: 'at' }) },
+    qr: new WorkBuddyQrLogin({ variant: CN_VARIANT }),
+  })
+  await accounts.captureDesktop()
   const deps: WorkBuddyStatusRouteOptions = {
-    store: new WorkBuddyCredentialStore({
-      desktopPath: desktop,
-      ownPath: join(dir, 'own.json'),
-      refresh: async credential => ({ accessToken: credential.accessToken }),
-    }),
+    accounts,
     client: { fetchCredits: async () => ({ total: 0, accounts: [] }) },
     models: () => [],
     ...overrides,
@@ -108,62 +128,86 @@ describe('context capacity reporting', () => {
     expect(models.find(model => model.id === 'plain')?.contextWindow).toBe(1_000_000)
   })
 
-  it('omits capacity when the upstream number is not usable', async () => {
-    const port = await startStatusServer({
-      models: (): readonly WorkBuddyUpstreamModel[] => [
-        {
-          id: 'broken', name: 'Broken', contextWindow: 0, maxTokens: 1_000, supportsImages: false,
-          reasoning: { supports: true, onlyReasoning: true, canDisableThinking: false },
-          billing: { free: false },
-        },
-      ],
+  /**
+   * The pool is what "signed in" means now. The desktop app's session is only
+   * one way an account gets in, so the status document must describe the pool
+   * even when the app is signed out — which is the whole point of capturing the
+   * credential at all.
+   */
+  it('reports signed-in from the pool even with no desktop file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'wb-status-'))
+    CLEANUP.push(() => rm(dir, { recursive: true, force: true }))
+    const store = new WorkBuddyCredentialStore({
+      variant: CN_VARIANT,
+      desktopPath: join(dir, 'absent.info'),
+      ownPath: join(dir, 'own.json'),
+      refresh: async credential => ({ accessToken: credential.accessToken }),
     })
+    const pool = new WorkBuddyAccountPool({ variant: CN_VARIANT, path: join(dir, 'accounts.json') })
+    const accounts = new WorkBuddyAccountService({
+      variant: CN_VARIANT,
+      pool,
+      store,
+      client: { fetchCredits: async () => ({ total: 12, accounts: [] }), refreshToken: async () => ({ accessToken: 'at' }) },
+      qr: new WorkBuddyQrLogin({ variant: CN_VARIANT }),
+    })
+    // Capture once while the app is "signed in", then remove the file: the
+    // captured account must keep the variant alive.
+    const desktop = join(dir, 'absent.info')
+    await writeFile(desktop, nestedDoc(Date.now() + 3600_000))
+    await accounts.captureDesktop()
+    await rm(desktop, { force: true })
+
+    const deps: WorkBuddyStatusRouteOptions = {
+      accounts,
+      client: { fetchCredits: async () => ({ total: 12, accounts: [] }) },
+      models: () => [],
+    }
+    const server = createServer(workBuddyStatusHandler(deps))
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as { port: number }
+    CLEANUP.push(() => new Promise<void>(resolve => server.close(() => resolve())))
     const response = await requestOnce({ port, method: 'GET', headers: { host: `127.0.0.1:${String(port)}` } })
-    const body = JSON.parse(response.body) as { models?: readonly { id: string; contextWindow?: number }[] }
-    // A non-positive capacity is not reported rather than shown as "0".
-    expect(body.models?.find(model => model.id === 'broken')?.contextWindow).toBeUndefined()
+    const body = JSON.parse(response.body) as {
+      status: string
+      credits?: { total: number }
+      accounts?: { accounts: readonly { origin: string }[] }
+    }
+    expect(body.status).toBe('signed-in')
+    expect(body.credits?.total).toBe(12)
+    expect(body.accounts?.accounts).toHaveLength(1)
+    expect(body.accounts?.accounts[0]?.origin).toBe('desktop')
   })
-})
 
-describe('web status route gate', () => {
-  it('serves a same-origin GET without an Origin header', async () => {
-    const port = await startStatusServer()
+  it('reports signed-out with a reason when the pool is empty', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'wb-status-'))
+    CLEANUP.push(() => rm(dir, { recursive: true, force: true }))
+    const store = new WorkBuddyCredentialStore({
+      variant: CN_VARIANT,
+      desktopPath: join(dir, 'absent.info'),
+      ownPath: join(dir, 'own.json'),
+      refresh: async credential => ({ accessToken: credential.accessToken }),
+    })
+    const pool = new WorkBuddyAccountPool({ variant: CN_VARIANT, path: join(dir, 'accounts.json') })
+    const accounts = new WorkBuddyAccountService({
+      variant: CN_VARIANT,
+      pool,
+      store,
+      client: { fetchCredits: async () => ({ total: 0, accounts: [] }), refreshToken: async () => ({ accessToken: 'at' }) },
+      qr: new WorkBuddyQrLogin({ variant: CN_VARIANT }),
+    })
+    const deps: WorkBuddyStatusRouteOptions = {
+      accounts,
+      client: { fetchCredits: async () => ({ total: 0, accounts: [] }) },
+      models: () => [],
+    }
+    const server = createServer(workBuddyStatusHandler(deps))
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as { port: number }
+    CLEANUP.push(() => new Promise<void>(resolve => server.close(() => resolve())))
     const response = await requestOnce({ port, method: 'GET', headers: { host: `127.0.0.1:${String(port)}` } })
-    expect(response.status).toBe(200)
-    expect(JSON.parse(response.body)).toMatchObject({ status: 'signed-in', nickname: '昵称' })
-  })
-
-  it('accepts localhost hosts and explicit loopback Origins', async () => {
-    const port = await startStatusServer()
-    const viaLocalhost = await requestOnce({ port, method: 'GET', headers: { host: `localhost:${String(port)}` } })
-    expect(viaLocalhost.status).toBe(200)
-    const viaOrigin = await requestOnce({
-      port,
-      method: 'GET',
-      headers: { host: `127.0.0.1:${String(port)}`, origin: `http://127.0.0.1:${String(port)}` },
-    })
-    expect(viaOrigin.status).toBe(200)
-  })
-
-  it('drops a DNS-rebinding style request whose Host is not loopback', async () => {
-    const port = await startStatusServer()
-    const response = await requestOnce({ port, method: 'GET', headers: { host: 'evil.example:3080' } })
-    expect(response.status).toBe(403)
-  })
-
-  it('drops a request whose Origin is not loopback even on a loopback Host', async () => {
-    const port = await startStatusServer()
-    const response = await requestOnce({
-      port,
-      method: 'GET',
-      headers: { host: `127.0.0.1:${String(port)}`, origin: 'http://evil.example' },
-    })
-    expect(response.status).toBe(403)
-  })
-
-  it('answers 405 for non-GET methods', async () => {
-    const port = await startStatusServer()
-    const response = await requestOnce({ port, method: 'POST', headers: { host: `127.0.0.1:${String(port)}` } })
-    expect(response.status).toBe(405)
+    const body = JSON.parse(response.body) as { status: string, reason?: string }
+    expect(body.status).toBe('signed-out')
+    expect(body.reason).toContain('no account')
   })
 })

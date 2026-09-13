@@ -8,6 +8,8 @@ import LlmRuntime from '@deepseek-ai/dsh-llm'
 import SettingsProvider from '@deepseek-ai/dsh-settings'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import * as WorkBuddy from '../src/index.ts'
+import { WorkBuddyAccountPool } from '../src/account-pool.ts'
+import { WorkBuddyAccountService } from '../src/account-service.ts'
 import { WorkBuddyCredentialStore } from '../src/auth.ts'
 import { fingerprintModel } from '../src/probe-store.ts'
 import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
@@ -202,30 +204,68 @@ describe('catalog lifecycle', () => {
     expect(request.mock.calls.length).toBe(afterFirst)
   })
 
-  it('hides the group when the credential disappears and restores it when it returns', async () => {
+  /**
+   * Signing out of the desktop app is no longer a sign-out of the plugin: the
+   * captured credential is a long-lived pool member and the model group is
+   * visible while the pool has an account. Only an *empty pool* hides it, and
+   * removing the account is what empties it.
+   */
+  it('keeps serving after the desktop app signs out, and hides only when the pool empties', async () => {
     const root = await tempDir()
     const cnFile = join(root, 'cn.info')
     await writeFile(cnFile, credentialDocument('copilot.tencent.com', 'uid-a'))
     vi.stubEnv('DSH_HOME', root)
     vi.stubEnv('WORKBUDDY_AUTH_FILE', cnFile)
     vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', join(root, 'absent.info'))
-    vi.stubGlobal('fetch', vi.fn(async () => fakeResponse(catalogEnvelope('live-model', 'Live'))))
+    // Loopback calls are this test's own requests to the mounted routes; only
+    // upstream calls get the stubbed catalog answer.
+    const realFetch = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      if (String(url).startsWith('http://127.0.0.1')) return realFetch(url, init)
+      return fakeResponse(catalogEnvelope('live-model', 'Live'))
+    }))
 
     const ctx = await boot()
     await vi.waitFor(async () => {
       expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toEqual(['live-model'])
     })
 
-    // Signing out (file removed) must remove the group, not leave it pickable.
+    // The desktop app signs out. The captured account keeps serving.
     await rm(cnFile)
+    // Give the sweep several rounds to notice the file is gone; the group must
+    // survive them all, which is the behaviour change this test locks in.
+    await new Promise(resolve => setTimeout(resolve, 1_000))
+    expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toEqual(['live-model'])
+
+    // Signing back in as the same account changes nothing (it is upserted).
+    await writeFile(cnFile, credentialDocument('copilot.tencent.com', 'uid-a'))
+    await new Promise(resolve => setTimeout(resolve, 500))
+    expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toEqual(['live-model'])
+
+    // Emptying the pool is what hides the group — done through the real
+    // account route, which is the path the card uses. The desktop file goes
+    // first: while it is signed in, the very next sweep would re-capture the
+    // account, which is the intended behaviour rather than a failure.
+    await rm(cnFile)
+    const routes = FakeWebServer.current!.routes
+    const server = await serve(routes)
+    const status = JSON.parse((await (await fetch(`http://127.0.0.1:${String(server.port)}/plugins/dsh-workbuddy-connect/status`, {
+      headers: { host: `127.0.0.1:${String(server.port)}` },
+    })).text())) as { probeKey: string, accounts: { accounts: readonly { id: string }[] } }
+    for (const account of status.accounts.accounts) {
+      const removed = await fetch(`http://127.0.0.1:${String(server.port)}/plugins/dsh-workbuddy-connect/accounts`, {
+        method: 'POST',
+        headers: {
+          host: `127.0.0.1:${String(server.port)}`,
+          'content-type': 'application/json',
+          'x-workbuddy-probe-key': status.probeKey,
+        },
+        body: JSON.stringify({ action: 'remove', id: account.id }),
+      })
+      expect(await removed.json()).toMatchObject({ state: 'ok' })
+    }
     await vi.waitFor(async () => {
       expect(await ctx.llm.listModels('workbuddy')).toEqual([])
-    }, { timeout: 20_000 })
-
-    // Signing back in restores it: the provider stayed registered throughout.
-    await writeFile(cnFile, credentialDocument('copilot.tencent.com', 'uid-a'))
-    await vi.waitFor(async () => {
-      expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toEqual(['live-model'])
     }, { timeout: 20_000 })
   }, 45_000)
 
@@ -413,7 +453,9 @@ describe('identity changes during catalog loading', () => {
     vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', join(root, 'absent.info'))
 
     let fail = false
-    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init?: RequestInit) => {
+    const realFetch = globalThis.fetch
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      if (String(url).startsWith('http://127.0.0.1')) return realFetch(url, init)
       if (fail) return fakeResponse('offline', false, 503)
       const auth = String((init?.headers as Record<string, string> | undefined)?.['Authorization'] ?? '')
       return fakeResponse(auth.includes('uid-b')
@@ -426,7 +468,25 @@ describe('identity changes during catalog loading', () => {
       expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toEqual(['account-a-model'])
     })
 
+    // Empty the pool (signing the desktop app out no longer does it). The
+    // desktop file is removed first, or the next sweep re-captures it.
     await rm(cnFile)
+    const routes = FakeWebServer.current!.routes
+    const server = await serve(routes)
+    const before = JSON.parse((await (await fetch(`http://127.0.0.1:${String(server.port)}/plugins/dsh-workbuddy-connect/status`, {
+      headers: { host: `127.0.0.1:${String(server.port)}` },
+    })).text())) as { probeKey: string, accounts: { accounts: readonly { id: string }[] } }
+    for (const account of before.accounts.accounts) {
+      await fetch(`http://127.0.0.1:${String(server.port)}/plugins/dsh-workbuddy-connect/accounts`, {
+        method: 'POST',
+        headers: {
+          host: `127.0.0.1:${String(server.port)}`,
+          'content-type': 'application/json',
+          'x-workbuddy-probe-key': before.probeKey,
+        },
+        body: JSON.stringify({ action: 'remove', id: account.id }),
+      })
+    }
     await vi.waitFor(async () => { expect(await ctx.llm.listModels('workbuddy')).toEqual([]) })
 
     fail = true
@@ -472,6 +532,15 @@ describe('identity changes during catalog loading', () => {
     expect(aborted).toBe(true)
   }, 45_000)
 
+  /**
+   * The mid-flight switch, expressed at the pool's seam: the account can change
+   * *while a catalog request is in flight*, and the answer that comes back
+   * belongs to the account that asked for it. Saving it under the newly
+   * selected account would serve A's roster as B's on the next restart.
+   *
+   * The switch is driven from inside the fetch stub so the ordering is
+   * deterministic rather than a race the test hopes to hit.
+   */
   it('does not save a resolved credential under an identity read before it changed', async () => {
     const root = await tempDir()
     const cnFile = join(root, 'cn.info')
@@ -479,22 +548,28 @@ describe('identity changes during catalog loading', () => {
     vi.stubEnv('DSH_HOME', root)
     vi.stubEnv('WORKBUDDY_AUTH_FILE', cnFile)
     vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', join(root, 'absent.info'))
+
+    // Reach the live account service so the stub can switch the account while
+    // the request is outstanding, exactly as the desktop app would.
+    let service: WorkBuddyAccountService | undefined
+    const capture = WorkBuddyAccountService.prototype.captureDesktop
+    vi.spyOn(WorkBuddyAccountService.prototype, 'captureDesktop').mockImplementation(async function (this: WorkBuddyAccountService) {
+      service = this
+      return capture.call(this)
+    })
+
+    let switched = false
     vi.stubGlobal('fetch', vi.fn(async (_url: unknown, init?: RequestInit) => {
       const auth = String((init?.headers as Record<string, string> | undefined)?.['Authorization'] ?? '')
+      if (auth.includes('uid-a') && !switched) {
+        switched = true
+        await writeFile(cnFile, credentialDocument('copilot.tencent.com', 'uid-b'))
+        await service?.captureDesktop()
+      }
       return fakeResponse(auth.includes('uid-b')
         ? catalogEnvelope('account-b-model', 'B')
         : catalogEnvelope('account-a-model', 'A'))
     }))
-
-    const resolve = WorkBuddyCredentialStore.prototype.resolve
-    let switched = false
-    vi.spyOn(WorkBuddyCredentialStore.prototype, 'resolve').mockImplementation(async function (this: WorkBuddyCredentialStore) {
-      if (!switched) {
-        switched = true
-        await writeFile(cnFile, credentialDocument('copilot.tencent.com', 'uid-b'))
-      }
-      return resolve.call(this)
-    })
 
     const ctx = await boot()
     await vi.waitFor(async () => {

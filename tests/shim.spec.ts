@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WorkBuddyCredentialStore } from '../src/auth.ts'
 import { WorkBuddyCatalog } from '../src/catalog.ts'
-import { createWorkBuddyShim, type WorkBuddyShim } from '../src/shim.ts'
+import { createStoreSender, createWorkBuddyShim, type WorkBuddyShim } from '../src/shim.ts'
 import type { WorkBuddyChatResult } from '../src/upstream.ts'
 
 const CLEANUP: (() => Promise<void>)[] = []
@@ -70,14 +70,16 @@ async function startShim(upstreamResponse: () => WorkBuddyChatResult): Promise<H
     upstreamResponse,
   }
   harness.shim = createWorkBuddyShim({
-    store,
     catalog: new WorkBuddyCatalog(),
-    client: {
-      async chatStream(_credential, bodyJson): Promise<WorkBuddyChatResult> {
-        harness.upstreamBodies.push(bodyJson)
-        return harness.upstreamResponse()
+    sender: createStoreSender({
+      store,
+      client: {
+        async chatStream(_credential, bodyJson): Promise<WorkBuddyChatResult> {
+          harness.upstreamBodies.push(bodyJson)
+          return harness.upstreamResponse()
+        },
       },
-    },
+    }),
   })
   await harness.shim.ready
   CLEANUP.push(() => harness.shim.close())

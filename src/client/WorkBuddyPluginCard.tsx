@@ -4,8 +4,22 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
-import { WORKBUDDY_AI_PROBE_PATH, WORKBUDDY_AI_STATUS_PATH, WORKBUDDY_PROBE_PATH, WORKBUDDY_STATUS_PATH } from '../status-paths.ts'
-import type { WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus } from '../status-paths.ts'
+import {
+  WORKBUDDY_ACCOUNT_PATH,
+  WORKBUDDY_AI_ACCOUNT_PATH,
+  WORKBUDDY_AI_PROBE_PATH,
+  WORKBUDDY_AI_STATUS_PATH,
+  WORKBUDDY_PROBE_PATH,
+  WORKBUDDY_STATUS_PATH,
+} from '../status-paths.ts'
+import type {
+  WorkBuddyAccountAction,
+  WorkBuddyAccountResult,
+  WorkBuddyWebModelBadge,
+  WorkBuddyWebProbeSection,
+  WorkBuddyWebStatus,
+} from '../status-paths.ts'
+import { WorkBuddyAccountsTab } from './WorkBuddyAccountsTab.tsx'
 import type { WorkBuddySettingsKey } from './locales.ts'
 
 /** Localized copy injected by the browser-plugin registration. */
@@ -32,6 +46,8 @@ export interface WorkBuddyCardVariant {
   signedOutKey: WorkBuddySettingsKey
   statusPath: string
   probePath: string
+  /** Write endpoint that manages this variant's account pool. */
+  accountPath: string
 }
 
 /** CN WorkBuddy; the plugin's long-standing card and default. */
@@ -42,6 +58,7 @@ export const CN_CARD_VARIANT: WorkBuddyCardVariant = {
   signedOutKey: 'signedOutHint',
   statusPath: WORKBUDDY_STATUS_PATH,
   probePath: WORKBUDDY_PROBE_PATH,
+  accountPath: WORKBUDDY_ACCOUNT_PATH,
 }
 
 /** International WorkBuddy AI. */
@@ -52,6 +69,7 @@ export const AI_CARD_VARIANT: WorkBuddyCardVariant = {
   signedOutKey: 'signedOutHintAI',
   statusPath: WORKBUDDY_AI_STATUS_PATH,
   probePath: WORKBUDDY_AI_PROBE_PATH,
+  accountPath: WORKBUDDY_AI_ACCOUNT_PATH,
 }
 
 /** Both cards, in display order. */
@@ -491,11 +509,20 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState<WorkBuddyWebStatus>({ status: 'signed-out' })
   const [busy, setBusy] = useState(false)
-  // Three tabs. Default is the live status plus the one action the card
+  // Four tabs. Default is the live status plus the one action the card
   // carries; the two reference sets — context capacity, then rates and the
   // per-package breakdown — are deliberate visits, since neither changes while
-  // you watch.
-  const [tab, setTab] = useState<'status' | 'context' | 'details'>('status')
+  // you watch. Accounts is a fourth because the pool is something you *manage*
+  // rather than read, and the QR dialog needs a tab of its own to open over.
+  const [tab, setTab] = useState<'status' | 'context' | 'details' | 'accounts'>('status')
+  /**
+   * Result of the last account action, shown under the list.
+   *
+   * Kept here rather than inside the tab because a re-render of the tab (the
+   * status poll replaces the whole document) would drop a local message the
+   * user has not read yet.
+   */
+  const [notice, setNotice] = useState<{ text: string, isError: boolean }>()
   const mounted = useRef(true)
 
   useEffect(() => {
@@ -620,7 +647,76 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
     void control({ action: 'probe', model: modelId })
   }, [control])
 
+  /**
+   * Run one account-pool action and return the host's answer.
+   *
+   * The key and route are the same pair the probe control uses, because both
+   * are writes on the same origin; the difference is only which state they act
+   * on. A failure is returned to the caller rather than turned into a card-wide
+   * error: the account tab has its own place to report it, and the QR dialog
+   * needs the reason inline ("this code expired") rather than a banner.
+   */
+  const runAccountAction = useCallback(async (action: WorkBuddyAccountAction): Promise<WorkBuddyAccountResult | undefined> => {
+    const key = status.status === 'signed-in' ? status.probeKey : undefined
+    if (key === undefined) {
+      // A signed-out pool can still be edited — that is how you add the first
+      // account — so the key has to come from somewhere. The status document
+      // withholds it when signed out, so re-read once and try again.
+      await refresh()
+      return undefined
+    }
+    try {
+      const response = await fetch(variant.accountPath, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-WorkBuddy-Probe-Key': key },
+        credentials: 'same-origin',
+        body: JSON.stringify(action),
+      })
+      const value: unknown = await response.json().catch(() => undefined)
+      if (!response.ok) {
+        const message = typeof value === 'object' && value !== null && 'error' in value
+          ? String((value as Record<string, unknown>)['error'])
+          : `HTTP ${String(response.status)}`
+        setNotice({ text: message, isError: true })
+        return undefined
+      }
+      const result = value as WorkBuddyAccountResult
+      // A visible confirmation for the actions whose effect is not on screen:
+      // a connectivity test and an add both need to say what happened.
+      if (action.action === 'test') {
+        if (result.test !== undefined) {
+          setNotice({
+            text: result.test.ok ? t('accountTestOk') : `${t('accountTestFailed')}: ${result.test.message}`,
+            isError: !result.test.ok,
+          })
+        }
+      } else if (action.action === 'poll' && result.state === 'added') {
+        setNotice({ text: result.created === true ? t('accountAdded', { name: result.name ?? '' }) : t('accountUpdated'), isError: false })
+      } else if (result.state === 'failed') {
+        setNotice({ text: result.reason ?? t('requestFailed'), isError: true })
+      }
+      return result
+    } catch (error: unknown) {
+      setNotice({ text: error instanceof Error ? error.message : t('requestFailed'), isError: true })
+      return undefined
+    }
+  }, [refresh, status, t, variant.accountPath])
+
   const title = t(variant.titleKey)
+  // The signed-in document, when there is one. The tab strip renders for an
+  // empty pool too, because that is where the card's "add by QR" lives: the
+  // first account cannot come from anywhere else when the desktop app has never
+  // been signed in. Every signed-in-only field below reads through this.
+  const signedIn = status.status === 'signed-in' ? status : undefined
+  /**
+   * The account section, from whichever sign-in state carries it.
+   *
+   * Read off the document rather than narrowed from \`status.status\`: the
+   * section is deliberately present in both states, and a union narrowed by the
+   * discriminant loses a property the other arm also declares.
+   */
+  const accountsSection = 'accounts' in status ? status.accounts : undefined
+  const controlKey = 'probeKey' in status ? status.probeKey : undefined
   const label = status.status === 'signed-in'
     ? status.nickname === undefined ? t('signedInAs', { nickname: '' }).trimEnd().replace(/[:：]$/, '') : t('signedInAs', { nickname: status.nickname })
     : status.status === 'error'
@@ -654,10 +750,10 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                 {busy ? t('refreshing') : t('refresh')}
               </button>
             </div>
-            {status.status === 'signed-in'
+            {signedIn !== undefined || accountsSection !== undefined
               ? <>
-                  {status.expiresAt === undefined ? null
-                    : <p style={bodyStyle}>{t('accessTokenExpires', { time: formatTime(status.expiresAt) })}</p>}
+                  {signedIn?.expiresAt === undefined ? null
+                    : <p style={bodyStyle}>{t('accessTokenExpires', { time: formatTime(signedIn?.expiresAt) })}</p>}
                   {/*
                     * Catalog provenance. Without it a stale list is
                     * indistinguishable from a fresh one, and a user cannot tell
@@ -665,26 +761,26 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                     * refresh action sits here because this is the line that says
                     * whether the list needs refreshing.
                     */}
-                  {status.catalog === undefined
+                  {signedIn?.catalog === undefined
                     ? null
                     : <div style={rowStyle}>
                         <span style={bodyStyle}>
-                          {status.catalog.source === 'live' && status.catalog.fetchedAt !== undefined
-                            ? t('catalogLive', { time: formatTime(status.catalog.fetchedAt) })
-                            : status.catalog.source === 'saved' && status.catalog.fetchedAt !== undefined
-                              ? t('catalogSaved', { time: formatTime(status.catalog.fetchedAt) })
+                          {signedIn?.catalog.source === 'live' && signedIn?.catalog.fetchedAt !== undefined
+                            ? t('catalogLive', { time: formatTime(signedIn?.catalog.fetchedAt) })
+                            : signedIn?.catalog.source === 'saved' && signedIn?.catalog.fetchedAt !== undefined
+                              ? t('catalogSaved', { time: formatTime(signedIn?.catalog.fetchedAt) })
                               : t('catalogFallback')}
-                          {status.catalog.appVersion === undefined
+                          {signedIn?.catalog.appVersion === undefined
                             ? ''
-                            : ` · ${t('catalogAppVersion', { version: status.catalog.appVersion })}`}
+                            : ` · ${t('catalogAppVersion', { version: signedIn?.catalog.appVersion })}`}
                         </span>
                         <button type="button" style={buttonStyle} disabled={busy} onClick={() => { void refreshModels() }}>
                           {busy ? t('refreshingModels') : t('refreshModels')}
                         </button>
                       </div>}
-                  {status.catalog?.error === undefined
+                  {signedIn?.catalog?.error === undefined
                     ? null
-                    : <p style={errorStyle}>{t('catalogError', { message: status.catalog.error })}</p>}
+                    : <p style={errorStyle}>{t('catalogError', { message: signedIn?.catalog.error })}</p>}
                   {/*
                     * Three tabs, split by what the reader came for.
                     *
@@ -703,7 +799,7 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                     * decision-relevant.
                     */}
                   <div role="tablist" style={tabBarStyle}>
-                    {(['status', 'context', 'details'] as const).map(id => (
+                    {(['status', 'context', 'details', 'accounts'] as const).map(id => (
                       <button
                         key={id}
                         type="button"
@@ -712,26 +808,26 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                         onClick={() => { setTab(id) }}
                         style={{ ...tabStyle, ...(tab === id ? tabActiveStyle : {}) }}
                       >
-                        {t(id === 'status' ? 'tabStatus' : id === 'context' ? 'tabContext' : 'tabDetails')}
+                        {t(id === 'status' ? 'tabStatus' : id === 'context' ? 'tabContext' : id === 'details' ? 'tabDetails' : 'tabAccounts')}
                       </button>
                     ))}
                   </div>
 
                   {tab === 'status' ? (
                     <div style={tabPanelStyle}>
-                      {status.credits === undefined ? null : (
+                      {signedIn?.credits === undefined ? null : (
                         <div style={quotaListStyle}>
                           <div style={rowStyle}>
                             <h3 style={quotaTitleStyle}>{t('creditsHeading')}</h3>
-                            <span style={bodyStyle}>{t('creditsTotal', { total: formatNumber(status.credits.total) })}</span>
+                            <span style={bodyStyle}>{t('creditsTotal', { total: formatNumber(signedIn?.credits.total) })}</span>
                           </div>
                         </div>
                       )}
-                      {status.creditsError === undefined ? null
-                        : <p style={errorStyle}>{t('creditsError', { message: status.creditsError })}</p>}
-                      {status.probe === undefined ? null : (
+                      {signedIn?.creditsError === undefined ? null
+                        : <p style={errorStyle}>{t('creditsError', { message: signedIn?.creditsError })}</p>}
+                      {signedIn?.probe === undefined ? null : (
                         <ProbeSection
-                          probe={status.probe}
+                          probe={signedIn?.probe}
                           t={t}
                           busy={busy}
                           onDetect={confirmDetect}
@@ -739,16 +835,33 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                         />
                       )}
                     </div>
+                  ) : tab === 'accounts' ? (
+                    <div style={tabPanelStyle}>
+                      {accountsSection === undefined || controlKey === undefined
+                        // The account section rides both sign-in states, so a
+                        // missing one means an older host build is answering.
+                        ? <p style={bodyStyle}>{t('accountUnavailable')}</p>
+                        : <WorkBuddyAccountsTab
+                            accounts={accountsSection}
+                            accountPath={variant.accountPath}
+                            probeKey={controlKey}
+                            t={t}
+                            busy={busy}
+                            run={runAccountAction}
+                            refresh={refresh}
+                            {...notice === undefined ? {} : { notice: notice.text, noticeIsError: notice.isError }}
+                          />}
+                    </div>
                   ) : tab === 'context' ? (
                     <div style={tabPanelStyle}>
-                      <ContextTable models={status.models} t={t} />
+                      <ContextTable models={signedIn?.models} t={t} />
                     </div>
                   ) : (
                     <div style={tabPanelStyle}>
-                      {status.credits === undefined ? null : (
+                      {signedIn?.credits === undefined ? null : (
                         <div style={quotaListStyle}>
                           <h3 style={quotaTitleStyle}>{t('creditsDetailHeading')}</h3>
-                          {status.credits.accounts
+                          {signedIn?.credits.accounts
                             .filter(account => account.remain > 0)
                             .map((account, index) => (
                             <CreditBar
@@ -761,10 +874,10 @@ export function WorkBuddyPluginCard({ t, variant = CN_CARD_VARIANT }: WorkBuddyP
                           ))}
                         </div>
                       )}
-                      {status.models === undefined || status.models.length === 0 ? null : (
+                      {signedIn?.models === undefined || signedIn?.models.length === 0 ? null : (
                         <div style={quotaListStyle}>
                           <h3 style={quotaTitleStyle}>{t('modelsHeading')}</h3>
-                          {status.models
+                          {signedIn?.models
                             .filter(model => model.free === true || (model.badges?.length ?? 0) > 0)
                             .map(model => <ModelOfferRow key={model.id} model={model} t={t} />)}
                         </div>

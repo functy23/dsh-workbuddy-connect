@@ -3,8 +3,11 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { WorkBuddyAccountPool } from '../src/account-pool.ts'
+import { WorkBuddyAccountService } from '../src/account-service.ts'
 import { WorkBuddyCredentialStore } from '../src/auth.ts'
 import { WorkBuddyCatalog, FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
+import { WorkBuddyQrLogin } from '../src/qr-login.ts'
 import { workBuddyProbeHandler } from '../src/probe-route.ts'
 import { workBuddyStatusHandler } from '../src/web-status.ts'
 import { AI_VARIANT, CN_VARIANT, type WorkBuddyVariant } from '../src/variants.ts'
@@ -83,9 +86,26 @@ async function mount(variant: WorkBuddyVariant, options: {
   const client = {
     fetchCredits: async () => ({ total: variant.id === 'workbuddy-ai' ? 350 : 4663, accounts: [] }),
   } as unknown as WorkBuddyUpstreamClient
+  // A pool with one account, so the status route reports the signed-in shape
+  // these tests are about rather than the empty-pool notice.
+  const pool = new WorkBuddyAccountPool({ variant, path: join(tmpdir(), `wb-dual-${variant.id}-${String(Date.now())}-${Math.random().toString(36).slice(2)}.json`) })
+  // The account a variant's own region accepts; the wrong-region case is a
+  // separate test that mounts a pool built from the mismatched file instead.
+  pool.upsert({
+    uid: `uid-${variant.id}`,
+    domain: variant.region === 'global' ? 'www.workbuddy.ai' : 'copilot.tencent.com',
+    accessToken: 'at', refreshToken: 'rt', expiresAtMs: Date.now() + 3600_000, origin: 'desktop',
+  })
+  const accounts = new WorkBuddyAccountService({
+    variant,
+    pool,
+    store,
+    client,
+    qr: new WorkBuddyQrLogin({ variant }),
+  })
   const handler = workBuddyStatusHandler({
     path: variant.statusPath,
-    store,
+    accounts,
     client,
     models: () => options.catalog.current(),
     catalog: () => ({ source: 'fallback' }),
@@ -145,8 +165,12 @@ describe('per-variant route mount', () => {
 
     expect(cnBody['status']).toBe('signed-in')
     expect(aiBody['status']).toBe('signed-in')
+    // The region a card reports now comes from the pool's primary account, so
+    // this asserts the two variants are genuinely pointed at different pools.
     expect(cnBody['domain']).toBe('copilot.tencent.com')
     expect(aiBody['domain']).toBe('www.workbuddy.ai')
+    expect(cnBody['source']).toBe('desktop')
+    expect(aiBody['source']).toBe('desktop')
     // Separate balances: the whole reason the cards are separate.
     expect(cnBody['credits']).toMatchObject({ total: 4663 })
     expect(aiBody['credits']).toMatchObject({ total: 350 })
@@ -237,21 +261,39 @@ describe('per-variant route mount', () => {
     expect(ok.status).toBe(200)
   })
 
-  it('never serves a credential belonging to the other product', async () => {
+  /**
+   * The cross-product guard is a property of *reading the desktop file*, not of
+   * the status route: with a pool, a variant can be perfectly usable while the
+   * other product's credential sits in its configured file. The refusal has to
+   * happen where the file is read, and the pool must stay empty because of it.
+   */
+  it('refuses a desktop credential belonging to the other product', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wb-routes-'))
     CLEANUP.push(() => rm(root, { recursive: true, force: true }))
     // The CN file is handed to the AI provider.
     await writeFile(join(root, 'wrong.info'), credentialDocument('copilot.tencent.com'))
     vi.stubEnv('DSH_HOME', root)
     vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', join(root, 'wrong.info'))
-    const server = await mount(AI_VARIANT, { catalog: new WorkBuddyCatalog(FALLBACK_WORKBUDDY_AI_MODELS) })
-    const body = JSON.parse((await requestOnce({
-      port: server.port, method: 'GET', path: AI_VARIANT.statusPath,
-      headers: { host: `127.0.0.1:${server.port}` },
-    })).body) as Record<string, unknown>
-    // Signed out with an explanation rather than signed in as the wrong product.
-    expect(body['status']).toBe('signed-out')
-    expect(String(body['reason'])).toMatch(/WORKBUDDY_AI_AUTH_FILE/)
+    const store = new WorkBuddyCredentialStore({
+      variant: AI_VARIANT,
+      refresh: async credential => ({ accessToken: credential.accessToken }),
+    })
+    // Reading it as this variant's own credential is refused, and the error
+    // names the file to fix.
+    await expect(store.desktopCredential()).rejects.toThrow(/WORKBUDDY_AI_AUTH_FILE/)
+    const pool = new WorkBuddyAccountPool({ variant: AI_VARIANT, path: join(root, 'ai-accounts.json') })
+    const accounts = new WorkBuddyAccountService({
+      variant: AI_VARIANT,
+      pool,
+      store,
+      client: { fetchCredits: async () => ({ total: 0, accounts: [] }), refreshToken: async () => ({ accessToken: 'at' }) },
+      qr: new WorkBuddyQrLogin({ variant: AI_VARIANT }),
+    })
+    await accounts.captureDesktop().catch(() => undefined)
+    // Nothing was adopted, so the variant has no account rather than the wrong
+    // product's.
+    expect(pool.list()).toHaveLength(0)
+    expect(accounts.hasAccounts()).toBe(false)
   })
 
   it('reports where the served model list came from', async () => {

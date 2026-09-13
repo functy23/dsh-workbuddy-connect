@@ -12,7 +12,9 @@ Both the CN **WorkBuddy** and the international **WorkBuddy AI** apps are suppor
 
 ![WorkBuddy models in the DSH model picker](assets/1.png)
 
-- **CN and international side by side**: the CN app appears as the **WorkBuddy** group and the international one as **WorkBuddy AI**. Their models, accounts, and credit never mix. **Each group follows only its own app's sign-in**: install just the international app and only WorkBuddy AI appears; install both and both groups appear; sign out of one and that group goes away. Settings likewise shows **one card per version**, each with its own account and balance.
+- **CN and international side by side**: the CN app appears as the **WorkBuddy** group and the international one as **WorkBuddy AI**. Their models, accounts, and credit never mix — each keeps its **own account pool**. Settings likewise shows **one card per version**, each with its own accounts and balance.
+
+  Whether a group appears depends on whether **its account pool is empty**, not on whether the desktop app is currently signed in. Once you sign in to the desktop app, the account is recorded in the pool and kept; the group then keeps working even after the desktop app signs out, because the plugin holds the credential.
 
 ![WorkBuddy AI models in the DSH model picker](assets/5.png)
 
@@ -22,13 +24,39 @@ Both the CN **WorkBuddy** and the international **WorkBuddy AI** apps are suppor
 
 - **Status and detection**: Settings → Plugins → the matching card shows the account, token validity, remaining credit, and model offers. It also lets you refresh the model list manually and shows whether the current list came from the upstream or from the built-in fallback, and provides manual reasoning-level detection for eligible models.
 
+
+- **Multi-account rotation (since v0.6.0)**: each version can hold several accounts at once, and requests rotate between them automatically. When an account is rate limited (429), out of quota (402), or has an expired sign-in (401), the request is **retried on another account in the pool**, so the conversation does not break. Each healthy account is tried at most once per request — never an unbounded retry loop.
+
+  A limited account is set aside and the card shows "rate limited · retry in N min"; an out-of-quota account is set aside much longer (one hour, doubling on each consecutive failure, capped at 24 hours) and recovers on its own. When the upstream sends `Retry-After`, that value wins.
+
+  Accounts come from two places: **the desktop app's sign-in is captured automatically**, and you can **add more by QR** from the card (scan with the phone app; the sign-in joins the plugin only and does not touch the desktop app).
+
+
+### Managing accounts
+
+Settings → Plugins → the matching card → the **Accounts** tab:
+
+- Lists every pooled account (name, origin, remaining credit, token expiry) with its state (available / rate limited / out of quota / sign-in expired / off).
+- **Add by QR**: opens a QR code; sign in on the phone app and scan. Scanning the same account twice does not duplicate it — it refreshes that account's sign-in.
+- **Test**: sends one minimal request to confirm the account actually works.
+- **Enable / Disable**: a disabled account is not used by rotation (re-enabling also clears any earlier set-aside).
+- **Rename**: display name only, to tell several accounts apart.
+- **Remove**: deletes the stored sign-in with it; restoring it requires scanning again.
+
+The card header also has **Refresh balances**, which re-reads every account's credit.
+
+
+### Floating account window
+
+A **floating window** sits in the top-right corner of the conversation, showing each version's accounts in use and their remaining credit; a set-aside account shows "retry in N min". The arrow in its corner collapses it, and the collapsed state is remembered. Turn it off from the settings card if you do not want it.
+
 - **Rate**: every model name carries its credits multiplier (e.g. `GLM-5.2 · x0.79`, `Hy3 · x0.00`) in both the `/model` popup and the composer's model dropdown. The rate is display-only and never affects requests.
 
 - **Promo badges**: promo badges (`限时免费`, `夜间折扣`) ride the model name itself (e.g. `Hy4 preview · x0.00 · 限时免费`), visible wherever you pick a model; the status card also collects currently-discounted models. Per the WorkBuddy service data, synced each time DSH starts. The international version's promotions come from the service's `modelPromotions` (which carry an effective window). Once a promotion lapses its badge is withdrawn; because the service writes the discounted value into the model's own rate field, the original price cannot be reconstructed, so that model then reports "price unavailable — refresh to update" rather than repeating the discounted rate or claiming the model is free.
 
 ![Settings card showing the plugin](assets/2.png)
 
-The expanded card has three tabs: **Status** shows the account, token validity, total credit, catalog source, and reasoning-level detection; **Context** lists each model's context window (the international version distinguishes the default window from a larger selectable one); **Details** shows per-package credit and model offers. The CN and international versions each get their own card, showing their own account's information.
+The expanded card has four tabs: **Status** shows the account, token validity, total credit, catalog source, and reasoning-level detection; **Context** lists each model's context window (the international version distinguishes the default window from a larger selectable one); **Details** shows per-package credit and model offers; **Accounts** manages the pool (scan to add, test, enable, rename, remove). The CN and international versions each get their own card, showing their own accounts' information.
 
 ![Settings card showing account and remaining credit](assets/3.png)
 
@@ -94,6 +122,8 @@ After installing, switch to a WorkBuddy model in the model picker of the interfa
 ## CLI
 
 `dsh plugin --profile <web|desktop|dsh-tui> exec dsh-workbuddy-connect status`: sign-in state and remaining credit (`--json` for machine-readable output; `doctor` for diagnostics and `logout` for credential cleanup are also available).
+
+`dsh plugin --profile <web|desktop|dsh-tui> exec dsh-workbuddy-connect accounts`: lists the account pool (name, origin, balance, set-aside state). It is **read-only**, and exits 0 when the pool has an account and 1 when it is empty, so scripts can branch on it. Adding, removing, and editing accounts happens in the card UI.
 
 Both commands target the CN version by default; add `--provider workbuddy-ai` for the international one:
 

@@ -4,6 +4,10 @@
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { WorkBuddyCredentialStore, workbuddyOwnAuthPath } from './auth.ts'
+import { WorkBuddyAccountPool } from './account-pool.ts'
+import { WorkBuddyAccountService } from './account-service.ts'
+import { accountsJson, formatAccounts } from './account-cli.ts'
+import { WorkBuddyQrLogin } from './qr-login.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS } from './catalog.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
@@ -11,7 +15,7 @@ import { isHeartbeatProcessAlive, readHostHeartbeat, workbuddyHostHeartbeatPath 
 import { CN_VARIANT, variantFor, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
 import { resolveAppVersion } from './app-version.ts'
 
-type Action = 'doctor' | 'logout' | 'status'
+type Action = 'accounts' | 'doctor' | 'logout' | 'status'
 
 const JSON_SCHEMA_VERSION = 1
 
@@ -25,11 +29,12 @@ function safeMessage(error: unknown): string {
 
 function printHelp(): void {
   process.stdout.write([
-    'Usage: dsh-workbuddy-connect <doctor|status|logout> [--provider <id>] [--json]',
+    'Usage: dsh-workbuddy-connect <doctor|status|accounts|logout> [--provider <id>] [--json]',
     '',
-    '  doctor   secret-free sign-in and environment diagnostics',
-    '  status   sign-in state, remaining WorkBuddy credit, and host-bundle health',
-    '  logout   remove the plugin-owned credential copy (the desktop app keeps its sign-in)',
+    '  doctor    secret-free sign-in and environment diagnostics',
+    '  status    sign-in state, remaining WorkBuddy credit, and host-bundle health',
+    '  accounts  list the account pool (names, balances, cooldowns); read-only',
+    '  logout    remove the plugin-owned credential copy (the desktop app keeps its sign-in)',
     '',
     '  --provider  which product to inspect; defaults to workbuddy',
     `              one of: ${WORKBUDDY_VARIANTS.map(variant => variant.id).join(', ')}`,
@@ -173,6 +178,36 @@ async function status(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
   return 0
 }
 
+/**
+ * List the account pool. Read-only by design: adding an account needs a phone
+ * to scan with, and every other mutation is one click in the card.
+ */
+async function accounts(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<number> {
+  const client = new WorkBuddyUpstreamClient()
+  const pool = new WorkBuddyAccountPool({ variant })
+  const store = new WorkBuddyCredentialStore({
+    variant,
+    refresh: credential => client.refreshToken(credential),
+  })
+  const service = new WorkBuddyAccountService({
+    variant,
+    pool,
+    store,
+    client,
+    qr: new WorkBuddyQrLogin({ variant }),
+  })
+  // Capture the desktop app's current sign-in first, exactly as the host does
+  // on startup, so this command reports what the running plugin would see.
+  await service.captureDesktop().catch(() => undefined)
+  const snapshot = await service.snapshot({ withCredits: true })
+  if (jsonOutput) {
+    printJson({ schemaVersion: JSON_SCHEMA_VERSION, package: 'dsh-workbuddy-connect', version: WORKBUDDY_CONNECT_VERSION, ...accountsJson({ variant, snapshot, pool }) })
+    return snapshot.accounts.length > 0 ? 0 : 1
+  }
+  process.stdout.write(`${formatAccounts({ variant, snapshot, pool })}\n`)
+  return snapshot.accounts.length > 0 ? 0 : 1
+}
+
 /** Execute one boot-free command. */
 export async function run(argv: readonly string[]): Promise<number> {
   if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') {
@@ -180,9 +215,9 @@ export async function run(argv: readonly string[]): Promise<number> {
     return 0
   }
   const [rawAction, ...flags] = argv
-  const actions: readonly Action[] = ['doctor', 'logout', 'status']
+  const actions: readonly Action[] = ['accounts', 'doctor', 'logout', 'status']
   if (!actions.includes(rawAction as Action)) {
-    process.stderr.write(`dsh-workbuddy-connect: expected doctor, logout, or status; got ${JSON.stringify(rawAction)}\n`)
+    process.stderr.write(`dsh-workbuddy-connect: expected accounts, doctor, logout, or status; got ${JSON.stringify(rawAction)}\n`)
     return 1
   }
   const action = rawAction as Action
@@ -223,6 +258,8 @@ export async function run(argv: readonly string[]): Promise<number> {
         return await doctor(jsonOutput, variant)
       case 'status':
         return await status(jsonOutput, variant)
+      case 'accounts':
+        return await accounts(jsonOutput, variant)
       case 'logout': {
         const store = makeStore(variant)
         // Only this variant's plugin-owned copy is removed: the desktop app's

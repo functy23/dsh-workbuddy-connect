@@ -122,7 +122,20 @@ export interface WorkBuddyRefreshOutcome {
 /** Chat answer: either a live SSE response or a classified failure. */
 export type WorkBuddyChatResult =
   | { ok: true; response: Response }
-  | { ok: false; status: number; kind: UpstreamErrorKind; message: string }
+  | {
+    ok: false
+    status: number
+    kind: UpstreamErrorKind
+    message: string
+    /**
+     * The upstream's own `Retry-After`, verbatim, when it sent one.
+     *
+     * Carried rather than parsed here because the value's meaning is the
+     * caller's business: the rotation layer prefers it over its own backoff
+     * schedule, and the shim forwards it to the harness on a final failure.
+     */
+    retryAfter?: string
+  }
 
 const CN_CHAT_BASE = 'https://copilot.tencent.com'
 const CN_BILLING_BASE = 'https://www.codebuddy.cn'
@@ -263,7 +276,30 @@ export function regionOf(domain: string): WorkBuddyRegion {
 }
 
 function chatBase(credential: WorkBuddyCredential): string {
-  return regionOf(credential.domain) === 'global' ? GLOBAL_BASE : CN_CHAT_BASE
+  return chatBaseForDomain(credential.domain)
+}
+
+/**
+ * The chat (and login) base for a login domain.
+ *
+ * Exported because the QR sign-in flow needs the same answer *before* a
+ * credential exists: it knows only which variant it is signing into. Sharing
+ * one function is what keeps a QR sign-in from ever being pointed at the other
+ * region's endpoint — the mistake that would hand a CN account's token to the
+ * international gateway.
+ */
+export function chatBaseForDomain(domain: string): string {
+  return regionOf(domain) === 'global' ? GLOBAL_BASE : CN_CHAT_BASE
+}
+
+/** The chat (and login) base for a region, for callers with no credential yet. */
+export function chatBaseForRegion(region: WorkBuddyRegion): string {
+  return region === 'global' ? GLOBAL_BASE : CN_CHAT_BASE
+}
+
+/** The Origin/Referer pair the upstream expects for a region. */
+export function originForRegion(region: WorkBuddyRegion): string {
+  return region === 'global' ? GLOBAL_BASE : CN_BILLING_BASE
 }
 
 function billingBase(credential: WorkBuddyCredential): string {
@@ -507,12 +543,14 @@ export class WorkBuddyUpstreamClient {
       return { ok: false, status: 0, kind: 'server', message: `transport error: ${String(error)}` }
     }
     if (response.ok) return { ok: true, response }
+    const retryAfter = response.headers.get('retry-after') ?? undefined
     const text = (await response.text()).slice(0, ERROR_BODY_LIMIT)
     return {
       ok: false,
       status: response.status,
       kind: classifyUpstreamError(response.status, text),
       message: text,
+      ...retryAfter === undefined ? {} : { retryAfter },
     }
   }
 

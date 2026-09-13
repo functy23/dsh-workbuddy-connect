@@ -11,9 +11,17 @@ const PACKAGE_VERSION = JSON.parse(
 /** Build-time define map; `src/version.ts` reads `__DSH_WORKBUDDY_VERSION__`. */
 const VERSION_DEFINE = { __DSH_WORKBUDDY_VERSION__: JSON.stringify(PACKAGE_VERSION) }
 
+/**
+ * Packages the host's browser module loader provides.
+ *
+ * \`react-dom\` belongs here because the client half uses a portal to render over
+ * the conversation, and bundling a second copy of ReactDOM would give that
+ * portal a different reconciler than the one painting the page.
+ */
 const CLIENT_EXTERNALS = [
   'react',
   'react/jsx-runtime',
+  'react-dom',
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-runtime/client',
   '@deepseek-ai/dsh-client-ui-slots',

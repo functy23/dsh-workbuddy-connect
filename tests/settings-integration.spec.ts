@@ -33,10 +33,31 @@ function credentialDocument(domain: string): string {
   })
 }
 
+/**
+ * Remove a test's temp directory, tolerating a write that outlives disposal.
+ *
+ * The account pool persists atomically (temp file plus rename), so a sweep that
+ * was already in flight when the fiber was disposed can land one more file as
+ * \`rm\` walks the tree — which surfaces as ENOTEMPTY, not as a product fault.
+ * Retrying past it keeps the assertion that matters (the plugin's behaviour) from
+ * failing on filesystem timing.
+ */
+async function removeRoot(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await rm(path, { recursive: true, force: true })
+      return
+    } catch (error: unknown) {
+      if (attempt === 4) throw error
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+  }
+}
+
 afterEach(async () => {
   await context?.fiber.dispose()
   context = undefined
-  if (root !== undefined) await rm(root, { recursive: true, force: true })
+  if (root !== undefined) await removeRoot(root)
   root = undefined
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
@@ -178,7 +199,9 @@ describe('WorkBuddy Host settings integration', () => {
     }
     expect(fieldsOf('workbuddy')).toContain('authFile')
     expect(fieldsOf('workbuddy')).not.toContain('authFileAI')
-    expect(fieldsOf('workbuddy-ai')).toEqual(['authFileAI'])
+    // The floating account window's switch lives on both cards: the window is
+    // frame-wide chrome with one visibility, so either card can turn it off.
+    expect(fieldsOf('workbuddy-ai')).toEqual(['authFileAI', 'floatingAccounts'])
 
     // A write through one section must reach ONLY that variant's store. The
     // schema assertions above prove the two forms are split; this proves the

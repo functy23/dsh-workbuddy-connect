@@ -7,6 +7,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
+import { WorkBuddyFloatingAccounts } from './WorkBuddyFloatingAccounts.tsx'
 import { WorkBuddyProbeControl } from './WorkBuddyProbeControl.tsx'
 import { CARD_VARIANTS, WorkBuddyPluginCard } from './WorkBuddyPluginCard.tsx'
 import type { WorkBuddyPluginCardInjected } from './WorkBuddyPluginCard.tsx'
@@ -70,6 +71,17 @@ export function apply(ctx: ClientContext): void {
         inject: (): WorkBuddyPluginCardInjected => ({ t, variant }),
       }, WorkBuddyPluginCard))
     }
+    // The floating account window rides the conversation header's utilities
+    // slot, but renders through a portal: the utility area is inside the header,
+    // and the window's whole point is to sit over the transcript *without*
+    // taking header space. Registering once (not per variant) is deliberate —
+    // the window merges both pools, so two occupants would stack two copies.
+    ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({
+      name: 'conversation.session.header.utilities',
+      id: 'workbuddy-floating-accounts',
+      order: 90,
+      inject: (): { t: WorkBuddyPluginCardInjected['t'] } => ({ t }),
+    }, WorkBuddyFloatingAccounts))
     ctx.inject(['modelDirectories'], scope => {
       scope.slots.inject('conversation.input.right', () => scope.slots.register({
         name: 'conversation.input.right',

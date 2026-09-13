@@ -15,7 +15,14 @@
  * @module dsh-workbuddy-connect/variants
  */
 
-import { WORKBUDDY_AI_STATUS_PATH, WORKBUDDY_AI_PROBE_PATH, WORKBUDDY_PROBE_PATH, WORKBUDDY_STATUS_PATH } from './status-paths.ts'
+import {
+  WORKBUDDY_ACCOUNT_PATH,
+  WORKBUDDY_AI_ACCOUNT_PATH,
+  WORKBUDDY_AI_PROBE_PATH,
+  WORKBUDDY_AI_STATUS_PATH,
+  WORKBUDDY_PROBE_PATH,
+  WORKBUDDY_STATUS_PATH,
+} from './status-paths.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 
 /** One WorkBuddy product variant. */
@@ -34,6 +41,16 @@ export interface WorkBuddyVariant {
   desktopFilename: string
   /** Basename of the plugin-owned credential copy under `$DSH_HOME`. */
   ownFilename: string
+  /**
+   * Basename of the plugin-owned account-pool file under `$DSH_HOME`.
+   *
+   * One pool per variant, for the same reason the catalogs are split: the two
+   * products are separate subscriptions, and an account signed into one has no
+   * meaning for the other. The pool holds that variant's desktop-app account
+   * plus every account added by QR, so a user signed into both apps gets two
+   * independent rotations.
+   */
+  accountFilename: string
   /** Basename of the plugin-owned probe-record file under `$DSH_HOME`. */
   probeFilename: string
   /**
@@ -46,6 +63,8 @@ export interface WorkBuddyVariant {
   catalogFilename: string
   /** Same-origin status route consumed by this variant's card. */
   statusPath: string
+  /** Same-origin account-control route consumed by this variant's card. */
+  accountPath: string
   /** Same-origin probe-control route consumed by this variant's card. */
   probePath: string
 }
@@ -60,9 +79,11 @@ export const WORKBUDDY_VARIANTS: readonly WorkBuddyVariant[] = [
     env: 'WORKBUDDY_AUTH_FILE',
     desktopFilename: 'workbuddy-desktop.info',
     ownFilename: '.workbuddy-auth.json',
+    accountFilename: '.workbuddy-accounts.json',
     probeFilename: '.workbuddy-probe.json',
     catalogFilename: '.workbuddy-catalog.json',
     statusPath: WORKBUDDY_STATUS_PATH,
+    accountPath: WORKBUDDY_ACCOUNT_PATH,
     probePath: WORKBUDDY_PROBE_PATH,
   },
   {
@@ -73,9 +94,11 @@ export const WORKBUDDY_VARIANTS: readonly WorkBuddyVariant[] = [
     env: 'WORKBUDDY_AI_AUTH_FILE',
     desktopFilename: 'workbuddy-desktop-ai.info',
     ownFilename: '.workbuddy-ai-auth.json',
+    accountFilename: '.workbuddy-ai-accounts.json',
     probeFilename: '.workbuddy-ai-probe.json',
     catalogFilename: '.workbuddy-ai-catalog.json',
     statusPath: WORKBUDDY_AI_STATUS_PATH,
+    accountPath: WORKBUDDY_AI_ACCOUNT_PATH,
     probePath: WORKBUDDY_AI_PROBE_PATH,
   },
 ]

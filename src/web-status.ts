@@ -1,7 +1,12 @@
 /**
  * Same-origin status route for the WorkBuddy plugin card: sign-in state,
- * token expiry, and remaining credit, fetched by the browser half. The route
- * answers loopback browser requests only and never carries token material.
+ * token expiry, remaining credit, the account pool, and the floating window's
+ * data. The route answers loopback browser requests only and never carries
+ * token material.
+ *
+ * "Signed in" now means *the pool has an account*, not "the desktop app is
+ * signed in": the pool is what actually serves requests, and it deliberately
+ * outlives the desktop app's session.
  *
  * @module dsh-workbuddy-connect/web-status
  */
@@ -9,7 +14,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import type { WorkBuddyCredentialStore } from './auth.ts'
+import type { WorkBuddyAccountService } from './account-service.ts'
 import type { WorkBuddyUpstreamClient } from './upstream.ts'
 import { normalizeCredits } from './upstream.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
@@ -22,7 +27,8 @@ export type { WorkBuddyWebStatus } from './status-paths.ts'
 
 /** Constructor dependencies. */
 export interface WorkBuddyStatusRouteOptions {
-  store: WorkBuddyCredentialStore
+  /** The account pool this variant serves from. */
+  accounts: Pick<WorkBuddyAccountService, 'snapshot' | 'hasAccounts' | 'primaryCredential'>
   client: Pick<WorkBuddyUpstreamClient, 'fetchCredits'>
   /** Resolve the current model catalog for free/badge display. */
   models: () => readonly WorkBuddyModelInfo[]
@@ -38,6 +44,19 @@ export interface WorkBuddyStatusRouteOptions {
   catalog?: () => WorkBuddyWebCatalog | undefined
   /** In-process key authorizing probe control writes. */
   probeKey?: string
+  /**
+   * Whether this variant's accounts belong in the floating window. Read live,
+   * so toggling the setting takes effect on the next poll without a reload.
+   */
+  floatingWindow?: () => boolean
+  /**
+   * Why the pool is empty, when the reason is diagnosable.
+   *
+   * "Signed out" is the wrong answer for a desktop file that exists but holds
+   * the *other* product's credential: the user needs to be told which file to
+   * fix, not told to sign in.
+   */
+  emptyReason?: () => string | undefined
   /**
    * Route path to mount. Defaults to the CN variant's path so existing callers
    * and tests keep their behaviour; the international variant passes its own.
@@ -70,29 +89,50 @@ function loopbackRequest(req: IncomingMessage): boolean {
 }
 
 /**
- * Assemble the card's status document. Sign-in state is read-only; credit is
- * a live billing answer whose failure degrades to `creditsError` rather than
- * failing the whole document.
+ * Assemble the card's status document.
+ *
+ * Sign-in state is the pool's existence; credit is a live billing answer whose
+ * failure degrades to `creditsError` rather than failing the whole document.
  */
 export async function workBuddyWebStatus(
   deps: WorkBuddyStatusRouteOptions,
 ): Promise<WorkBuddyWebStatus> {
-  const authStatus = await deps.store.status()
-  if (authStatus.state !== 'signed-in') {
-    // A diagnosable sign-out (a credential for the *other* product) keeps its
-    // explanation: falling back to the generic hint would tell the user to sign
-    // in when the real fix is to correct a path.
+  if (!deps.accounts.hasAccounts()) {
+    // Nothing to serve as: the model group is hidden in this state too, so the
+    // card explains how to get an account rather than reporting a dead one. A
+    // diagnosable cause (a credential for the other product) wins over the
+    // generic hint, because it names the file to fix.
+    const diagnosed = deps.emptyReason?.()
     return {
       status: 'signed-out',
-      ...authStatus.reason === undefined ? {} : { reason: authStatus.reason },
+      reason: diagnosed ?? 'no account yet: sign in to the desktop app, or add one by QR from this card',
+      // The account section and the control key travel even with an empty pool.
+      // They are how the pool stops being empty: the card's "add by QR" action
+      // is a write, so withholding the key until an account existed would make
+      // scanning the first account impossible — the one case where the user has
+      // no other way in.
+      ...accountSections(deps, await deps.accounts.snapshot({ withCredits: false })),
     }
   }
-  const status: WorkBuddyWebStatus = {
+  // One snapshot serves both the card's account tab and the floating window.
+  // Credits are included because the window shows a balance per account; the
+  // service caches each figure for a minute so a poll is not a burst of
+  // billing requests.
+  // One snapshot serves both the account section and the primary account's
+  // identity fields; a second call would spend a second round of billing reads.
+  const snapshot = await deps.accounts.snapshot({ withCredits: true })
+  const primary = snapshot.accounts.find(account => account.id === snapshot.primary)
+  const sections = accountSections(deps, snapshot)
+  const status: Extract<WorkBuddyWebStatus, { status: 'signed-in' }> = {
     status: 'signed-in',
-    ...authStatus.nickname === undefined ? {} : { nickname: authStatus.nickname },
-    ...authStatus.domain === undefined || authStatus.domain === '' ? {} : { domain: authStatus.domain },
-    ...authStatus.source === undefined ? {} : { source: authStatus.source },
-    ...authStatus.expiresAtMs === undefined ? {} : { expiresAt: authStatus.expiresAtMs },
+    ...primary?.nickname === undefined ? {} : { nickname: primary.nickname },
+    ...primary === undefined ? {} : { expiresAt: primary.expiresAtMs },
+    // Which region this variant is answering for. Carried from the account
+    // rather than the descriptor so a card can never claim a region its pool
+    // does not actually speak to.
+    ...primary === undefined ? {} : { domain: primary.domain },
+    ...primary === undefined ? {} : { source: primary.origin },
+    ...sections,
   }
   // Model facts ride the signed-in document so the card can show rates,
   // promos, and context capacity without touching the Models picker. The rate
@@ -140,23 +180,25 @@ export async function workBuddyWebStatus(
   // "no models" is precisely the case a user needs explained, and it is the
   // only way to tell a hidden group from a failed fetch.
   const catalog = deps.catalog?.()
-  const withCatalog: WorkBuddyWebStatus = catalog === undefined ? status : { ...status, catalog }
-  const statusWithModels: WorkBuddyWebStatus = modelsField.length > 0
+  const withCatalog = catalog === undefined ? status : { ...status, catalog }
+  const statusWithModels = modelsField.length > 0
     ? { ...withCatalog, models: modelsField }
     : withCatalog
   // Probe state rides the signed-in document so the card can render the
   // consent switches and results without a second request. The control key
   // travels with it: this response already passed the loopback guard, and the
   // key authorizes only probe control, never credentials or completions.
-  const probed: WorkBuddyWebStatus = deps.probe === undefined
+  const probed = deps.probe === undefined
     ? statusWithModels
     : {
       ...statusWithModels,
       probe: deps.probe(),
       ...deps.probeKey === undefined ? {} : { probeKey: deps.probeKey },
     }
+  // The primary account's own balance, so the card's headline figure and the
+  // per-account rows can never disagree about which account they describe.
   try {
-    const credential = await deps.store.current()
+    const credential = await deps.accounts.primaryCredential()
     if (credential !== undefined) {
       const credits = await deps.client.fetchCredits(credential)
       return { ...probed, credits }
@@ -165,6 +207,31 @@ export async function workBuddyWebStatus(
     return { ...probed, creditsError: safeMessage(error) }
   }
   return probed
+}
+
+/**
+ * The account section plus the control key, shared by both sign-in states.
+ *
+ * One helper rather than two copies because the signed-out document needs both
+ * for the same reason: adding the first account is a write, and the write is
+ * authorized by the key this same document hands out.
+ */
+function accountSections(
+  deps: WorkBuddyStatusRouteOptions,
+  snapshot: Awaited<ReturnType<WorkBuddyStatusRouteOptions['accounts']['snapshot']>>,
+): {
+  accounts: NonNullable<Extract<WorkBuddyWebStatus, { status: 'signed-in' }>['accounts']>
+  probeKey?: string
+} {
+  return {
+    accounts: {
+      accounts: snapshot.accounts,
+      ...snapshot.primary === undefined ? {} : { primary: snapshot.primary },
+      ...snapshot.desktop === undefined ? {} : { desktop: snapshot.desktop },
+      floatingWindow: deps.floatingWindow?.() === true,
+    },
+    ...deps.probeKey === undefined ? {} : { probeKey: deps.probeKey },
+  }
 }
 
 /** The status route's request handler, extracted so tests can mount it on a bare server. */

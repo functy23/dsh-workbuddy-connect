@@ -17,7 +17,12 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-attachment'
-import { WorkBuddyCredentialStore, type WorkBuddyCredential } from './auth.ts'
+import { WorkBuddyCredentialStore } from './auth.ts'
+import { WorkBuddyAccountPool, credentialAccountId, credentialOf } from './account-pool.ts'
+import { WorkBuddyAccountService } from './account-service.ts'
+import { registerWorkBuddyAccountRoute } from './account-route.ts'
+import { WorkBuddyQrLogin } from './qr-login.ts'
+import { WorkBuddyRotation } from './rotation.ts'
 import { FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatalog } from './catalog.ts'
 import { workbuddyCatalogPath, WorkBuddyCatalogStore } from './catalog-store.ts'
 import { createWorkBuddyAdapter } from './adapter.ts'
@@ -32,15 +37,65 @@ import type { WorkBuddyWebCatalog, WorkBuddyWebProbeSection } from './status-pat
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { CN_VARIANT, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
+import type { WorkBuddyAccountAction, WorkBuddyAccountResult } from './status-paths.ts'
 
 export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, type WorkBuddyAdapter } from './adapter.ts'
-export { createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
+export { createWorkBuddyShim, createStoreSender, type WorkBuddyChatSender, type WorkBuddyShim } from './shim.ts'
+export {
+  accountIdOf,
+  cooldownDurationMs,
+  credentialAccountId,
+  credentialOf,
+  WorkBuddyAccountPool,
+  workbuddyAccountsPath,
+  WORKBUDDY_ACCOUNTS_FILENAME,
+  type WorkBuddyAccount,
+  type WorkBuddyAccountInput,
+  type WorkBuddyAccountOrigin,
+  type WorkBuddyAccountPoolOptions,
+  type WorkBuddyCooldown,
+  type WorkBuddyCooldownReason,
+  type WorkBuddyUpsertResult,
+} from './account-pool.ts'
+export {
+  WorkBuddyAccountService,
+  type WorkBuddyAccountServiceOptions,
+  type WorkBuddyAccountSnapshot,
+  type WorkBuddyWebAccount,
+} from './account-service.ts'
+export {
+  parseAccountAction,
+  registerWorkBuddyAccountRoute,
+  workBuddyAccountHandler,
+  type WorkBuddyAccountRouteOptions,
+} from './account-route.ts'
+export { accountsJson, formatAccounts } from './account-cli.ts'
+export {
+  challengeTag,
+  WorkBuddyQrLogin,
+  type WorkBuddyQrChallenge,
+  type WorkBuddyQrLoginOptions,
+  type WorkBuddyQrPoll,
+} from './qr-login.ts'
+export {
+  cooldownReasonFor,
+  isAccountScoped,
+  parseRetryAfter,
+  WorkBuddyRotation,
+  type WorkBuddyRotationOptions,
+  type WorkBuddyRotationOutcome,
+} from './rotation.ts'
 export {
   FALLBACK_WORKBUDDY_AI_MODELS,
   FALLBACK_WORKBUDDY_MODELS,
   WorkBuddyCatalog,
   type WorkBuddyModelInfo,
 } from './catalog.ts'
+export {
+  chatBaseForDomain,
+  chatBaseForRegion,
+  originForRegion,
+} from './upstream.ts'
 export {
   WORKBUDDY_CATALOG_FILENAME,
   workbuddyCatalogPath,
@@ -90,7 +145,6 @@ export {
   WorkBuddyCredentialStore,
   workbuddyOwnAuthPath,
   type WorkBuddyAuthStatus,
-  type WorkBuddyCredential,
 } from './auth.ts'
 export {
   classifyUpstreamError,
@@ -210,6 +264,12 @@ export interface Config {
    * until the user explicitly agrees.
    */
   probeConsent?: boolean
+  /**
+   * Whether the floating account window is drawn in the conversation. On by
+   * default: it is the only place the pool's state is visible while chatting,
+   * which is exactly when a rotation matters.
+   */
+  floatingAccounts?: boolean
 }
 
 /** Explicit CN desktop auth-file path (shared by the plugin schema and its section). */
@@ -219,11 +279,15 @@ const AUTH_FILE_AI_FIELD = z.string().description('WorkBuddy AI desktop auth fil
 /** Probe authorization (shared by the plugin schema and the CN section). */
 const PROBE_CONSENT_FIELD = z.boolean().default(false)
   .description('Authorize reasoning-effort probes (each probe sends real requests that may consume credit)')
+/** Floating account window visibility (shared by the plugin schema and both sections). */
+const FLOATING_ACCOUNTS_FIELD = z.boolean().default(true)
+  .description('Show the floating account window (names, remaining credit, and when a limited account will be retried)')
 
 export const Config: z<Config> = z.object({
   authFile: AUTH_FILE_FIELD,
   authFileAI: AUTH_FILE_AI_FIELD,
   probeConsent: PROBE_CONSENT_FIELD,
+  floatingAccounts: FLOATING_ACCOUNTS_FIELD,
 })
 
 /**
@@ -238,11 +302,13 @@ export const Config: z<Config> = z.object({
 const CN_SECTION: z<Config> = z.object({
   authFile: AUTH_FILE_FIELD,
   probeConsent: PROBE_CONSENT_FIELD,
+  floatingAccounts: FLOATING_ACCOUNTS_FIELD,
 })
 
 /** The international card's settings section: only its own auth-file path. */
 const AI_SECTION: z<Config> = z.object({
   authFileAI: AUTH_FILE_AI_FIELD,
+  floatingAccounts: FLOATING_ACCOUNTS_FIELD,
 })
 
 /** One variant's live runtime, assembled by {@link createVariantRuntime}. */
@@ -251,6 +317,12 @@ interface VariantRuntime {
   store: WorkBuddyCredentialStore
   client: WorkBuddyUpstreamClient
   catalog: WorkBuddyCatalog
+  /** Every credential this variant may send upstream. */
+  pool: WorkBuddyAccountPool
+  /** The pool's network-facing half: capture, credits, primary resolution. */
+  accounts: WorkBuddyAccountService
+  /** The QR sign-in flow, one per variant so the region is fixed by construction. */
+  qr: WorkBuddyQrLogin
   probeStore: WorkBuddyProbeStore
   probeService: WorkBuddyProbeService
   /**
@@ -304,11 +376,6 @@ interface CatalogFetch {
   promise: Promise<void>
 }
 
-/** Stable identity key used by credentials, probe records, and catalog entries. */
-function credentialIdentity(credential: Pick<WorkBuddyCredential, 'uid' | 'enterpriseId'>): string {
-  return `${credential.uid}:${credential.enterpriseId ?? ''}`
-}
-
 /** Read the configured explicit auth-file path for one variant. */
 function configuredAuthFile(config: Config, variant: WorkBuddyVariant): string | undefined {
   return variant.id === CN_VARIANT.id ? config.authFile : config.authFileAI
@@ -344,6 +411,9 @@ function createVariantRuntime(
     ...configured === undefined ? {} : { desktopPath: configured },
     refresh: credential => client.refreshToken(credential),
   })
+  const pool = new WorkBuddyAccountPool({ variant })
+  const qr = new WorkBuddyQrLogin({ variant })
+  const accounts = new WorkBuddyAccountService({ variant, pool, store, client, qr })
   const fallback = fallbackFor(variant)
   const catalog = new WorkBuddyCatalog(fallback)
   // Start hidden: a variant must serve no models until an account has actually
@@ -365,7 +435,10 @@ function createVariantRuntime(
   const probeService = new WorkBuddyProbeService({
     store: probeStore,
     catalog,
-    credentials: store,
+    // Probes run as the pool's primary account, the same one the catalog was
+    // fetched for, so an observation is always attributed to the account whose
+    // model list produced it.
+    credentials: accountsAsCredentialSource(accounts),
     client,
     consent: () => current().probeConsent === true,
     // Observations are per account: the service reads and writes its records
@@ -378,6 +451,9 @@ function createVariantRuntime(
     store,
     client,
     catalog,
+    pool,
+    accounts,
+    qr,
     probeStore,
     probeService,
     savedCatalogs,
@@ -456,6 +532,29 @@ function probeSection(runtime: VariantRuntime, consent: boolean): WorkBuddyWebPr
 }
 
 /**
+ * Adapt the account pool to the credential-store surface the probe service and
+ * the adapter's auth plane expect.
+ *
+ * Only three members are ever read there — `current`, `resolve`, and (for the
+ * probe's write-back guard) nothing else — so the pool's primary account is the
+ * one answer they all get. Returning a narrowed object rather than the real
+ * store keeps it impossible for a caller to reach the desktop file or the
+ * plugin-owned copy through this seam.
+ */
+function accountsAsCredentialSource(accounts: WorkBuddyAccountService): WorkBuddyCredentialStore {
+  return {
+    current: () => accounts.primaryCredential(),
+    resolve: async () => {
+      const credential = await accounts.primaryCredential()
+      if (credential === undefined) {
+        throw new Error('workbuddy: no account is available for this provider; add one from the plugin card')
+      }
+      return credential
+    },
+  } as unknown as WorkBuddyCredentialStore
+}
+
+/**
  * Start one variant: its loopback endpoint, provider registration, and
  * configuration-card wiring.
  *
@@ -466,8 +565,20 @@ function probeSection(runtime: VariantRuntime, consent: boolean): WorkBuddyWebPr
  * @returns whether the provider registered.
  */
 async function startVariant(ctx: Context, runtime: VariantRuntime): Promise<boolean> {
-  const { variant, store, client, catalog, probeService } = runtime
-  const shim = createWorkBuddyShim({ store, client, catalog, logger: ctx.logger })
+  const { variant, client, catalog, probeService, pool, accounts } = runtime
+  // Chat requests run through the pool's rotation, so one account's 429 is a
+  // routing decision rather than the user's problem. A refresh performed mid-
+  // rotation is persisted by the pool itself, which is what keeps a recovered
+  // token from being re-fetched on every later request.
+  const rotation = new WorkBuddyRotation({ pool, client, logger: ctx.logger })
+  // The shim wants "send this body and tell me what happened"; the rotation's
+  // extra bookkeeping (which accounts were tried) is not part of that contract,
+  // so only the result crosses the seam.
+  const shim = createWorkBuddyShim({
+    sender: { send: async (body, signal) => (await rotation.send(body, signal)).result },
+    catalog,
+    logger: ctx.logger,
+  })
   try {
     await shim.ready
   } catch (error: unknown) {
@@ -483,7 +594,10 @@ async function startVariant(ctx: Context, runtime: VariantRuntime): Promise<bool
       providerId: variant.id,
       displayName: variant.displayName,
       shim,
-      store,
+      // The catalog, the card's headline credit figure, and reasoning probes all
+      // run as the pool's primary account, so those answers stay stable while
+      // chat requests rotate underneath them.
+      store: accountsAsCredentialSource(accounts),
       catalog,
       resolveAttachments: () => ctx.get('attachments'),
       observe: modelId => probeService.recordFor(modelId),
@@ -562,6 +676,13 @@ export function apply(ctx: Context, config: Config): void {
    * from a previous identity be discarded instead of overwriting a newer one.
    */
   const lastIdentities = new Map<string, string>()
+  /**
+   * The last diagnosable failure while capturing the desktop app's sign-in,
+   * per variant. Surfaced by the card when the pool is empty, because that is
+   * the case where "signed out" is an unhelpful answer — a file holding the
+   * other product's credential is the common cause and it names the file.
+   */
+  const desktopReadError = new Map<string, string>()
 
   const runtimes = WORKBUDDY_VARIANTS.map(variant => createVariantRuntime(
     config,
@@ -648,13 +769,28 @@ export function apply(ctx: Context, config: Config): void {
     for (const runtime of runtimes) {
       registerWorkBuddyStatusRoute(webCtx, {
         path: runtime.variant.statusPath,
-        store: runtime.store,
+        accounts: runtime.accounts,
         client: runtime.client,
         models: () => runtime.catalog.current(),
         catalog: () => catalogSection(runtime),
         probe: () => probeSection(runtime, current().probeConsent === true),
+        floatingWindow: () => current().floatingAccounts !== false,
+        emptyReason: () => desktopReadError.get(runtime.variant.id),
         probeKey,
       })
+      registerWorkBuddyAccountRoute(webCtx, {
+        path: runtime.variant.accountPath,
+        handle: async action => {
+          const result = await handleAccountAction(runtime, action)
+          // A pool change can add, remove, or re-enable the account the catalog
+          // and probes run as, so the next sweep is not the right moment to
+          // notice — the group has to appear or disappear now.
+          if (action.action !== 'poll' && action.action !== 'add' && action.action !== 'cancel') {
+            await syncVariant(runtime)
+          }
+          return result
+        },
+      }, probeKey)
       registerWorkBuddyProbeRoute(webCtx, {
         path: runtime.variant.probePath,
         probe: async modelId => {
@@ -672,7 +808,11 @@ export function apply(ctx: Context, config: Config): void {
           // changes, and the sweep owns that.
           let credential
           try {
-            credential = await runtime.store.current()
+            // Capture the desktop app's current sign-in first: the user pressed
+            // refresh because the list looks wrong, and a sign-in that happened
+            // since the last sweep is the common cause.
+            await runtime.accounts.captureDesktop()
+            credential = await runtime.accounts.primaryCredential()
           } catch (error: unknown) {
             // A refused credential (wrong region, unreadable file) is a report,
             // not a crash out of the route.
@@ -685,7 +825,7 @@ export function apply(ctx: Context, config: Config): void {
             adoptIdentity(runtime, undefined)
             return { state: 'signed-out' }
           }
-          const identity = credentialIdentity(credential)
+          const identity = credentialAccountId(credential)
           // Same transition the sweep performs: a switch reached through the
           // manual path must drop the previous account's data *now*, not when
           // the fetch lands, or a failed fetch leaves those models pickable.
@@ -719,10 +859,16 @@ export function apply(ctx: Context, config: Config): void {
       ai: () => config,
     }
     /** Merge both sections into the whole config the rest of the plugin reads. */
+    // The floating-window switch is shared by both cards but stored per
+    // section; the CN section's copy wins when the two disagree, so the switch
+    // always has one answer rather than a per-variant one the window would have
+    // to arbitrate.
+    const floating = (): boolean | undefined => sources.cn().floatingAccounts ?? sources.ai().floatingAccounts
     const merged = (): Config => ({
       ...sources.cn().authFile === undefined ? {} : { authFile: sources.cn().authFile },
       ...sources.cn().probeConsent === undefined ? {} : { probeConsent: sources.cn().probeConsent },
       ...sources.ai().authFileAI === undefined ? {} : { authFileAI: sources.ai().authFileAI },
+      ...floating() === undefined ? {} : { floatingAccounts: floating() === true },
     })
     const repointStores = (): void => {
       const next = merged()
@@ -748,6 +894,107 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   /**
+   * Execute one account-pool action from the card.
+   *
+   * Everything credential-shaped happens here, host-side: the browser sends a
+   * verb and an id, never a token, and the QR flow's state is the only opaque
+   * value that travels in either direction.
+   */
+  const handleAccountAction = async (
+    runtime: VariantRuntime,
+    action: WorkBuddyAccountAction,
+  ): Promise<WorkBuddyAccountResult> => {
+    const { pool, accounts, qr, client } = runtime
+    switch (action.action) {
+      case 'add': {
+        const challenge = await qr.start()
+        return {
+          state: 'ok',
+          challenge: { state: challenge.state, authUrl: challenge.authUrl, expiresAtMs: challenge.expiresAtMs },
+        }
+      }
+      case 'cancel': {
+        qr.cancel(action.state)
+        return { state: 'ok' }
+      }
+      case 'poll': {
+        let poll: Awaited<ReturnType<WorkBuddyQrLogin['poll']>>
+        try {
+          poll = await qr.poll(action.state)
+        } catch (error: unknown) {
+          // A wrong-region scan is a user-fixable mistake, not a crash.
+          return { state: 'failed', reason: error instanceof Error ? error.message.slice(0, 300) : String(error) }
+        }
+        if (poll.status !== 'ready') return { state: poll.status }
+        const added = accounts.addQrAccount(poll)
+        // Adding an account can make an empty pool non-empty, which is what
+        // reveals the model group; the caller's sync handles that.
+        return {
+          state: 'added',
+          name: added.account.label ?? added.account.nickname ?? added.account.uid.slice(0, 8),
+          created: added.created,
+          ...added.created ? {} : { reason: 'already in the pool; its sign-in tokens were refreshed' },
+        }
+      }
+      case 'remove': {
+        if (!pool.remove(action.id)) return { state: 'failed', reason: 'no such account' }
+        accounts.invalidateCredits(action.id)
+        return { state: 'ok' }
+      }
+      case 'enable': {
+        if (!pool.setEnabled(action.id, action.enabled)) return { state: 'failed', reason: 'no such account' }
+        // Re-enabling is a promise that this account is usable again, so a
+        // benching from before the user's decision must not keep blocking it.
+        if (action.enabled) pool.clearCooldown(action.id)
+        return { state: 'ok' }
+      }
+      case 'label': {
+        if (!pool.setLabel(action.id, action.label)) return { state: 'failed', reason: 'no such account' }
+        return { state: 'ok' }
+      }
+      case 'reorder': {
+        pool.reorder(action.ids)
+        return { state: 'ok' }
+      }
+      case 'refresh-credits': {
+        for (const account of pool.list()) accounts.invalidateCredits(account.id)
+        return { state: 'ok' }
+      }
+      case 'test': {
+        const account = pool.get(action.id)
+        if (account === undefined) return { state: 'failed', reason: 'no such account' }
+        // A minimal streaming request, assembled host-side, so the result
+        // describes what a real message would experience.
+        const model = runtime.catalog.current()[0]?.id ?? 'auto'
+        const result = await client.chatStream(
+          credentialOf(account),
+          JSON.stringify({ model, stream: true, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }),
+          AbortSignal.timeout(30_000),
+        )
+        if (result.ok) {
+          // Read the first bytes and hang up: the probe wants the acceptance
+          // signal, not an answer.
+          const body = result.response.body
+          if (body !== null) {
+            const reader = body.getReader()
+            try {
+              const first = await reader.read()
+              if (first.done) return { state: 'ok', test: { ok: false, message: '上游没有返回任何数据' } }
+              return { state: 'ok', test: { ok: true, message: '连通正常' } }
+            } catch (error: unknown) {
+              return { state: 'ok', test: { ok: false, message: `读取流失败: ${String(error)}` } }
+            } finally {
+              await reader.cancel().catch(() => {})
+            }
+          }
+          return { state: 'ok', test: { ok: true, message: '连通正常' } }
+        }
+        return { state: 'ok', test: { ok: false, message: `上游返回 ${result.kind} (http ${result.status}): ${result.message.slice(0, 200)}` } }
+      }
+    }
+  }
+
+  /**
    * Fetch one variant's catalog for the current credential.
    *
    * Shared by the credential sweep and the card's manual refresh, and written
@@ -761,10 +1008,10 @@ export function apply(ctx: Context, config: Config): void {
    *   what a slow answer from a superseded account must not do. Checking only
    *   the *identity* was not enough: two refreshes for the same account can
    *   still finish out of order, and the older one would win.
-   * - **`resolve()`, not `current()`.** Only `resolve()` performs the locked,
-   *   single-flight token renewal. Reading `current()` meant an expired token
-   *   made every catalog request fail until something else happened to refresh
-   *   it, leaving the group on the fallback roster.
+   * - **`primaryCredential()`, not a raw pool read.** The primary resolver is
+   *   the one path that renews a token that is at or near expiry, so an expired
+   *   token cannot make every catalog request fail until something else happens
+   *   to refresh it.
    */
   const fetchCatalog = async (runtime: VariantRuntime, identity: string): Promise<void> => {
     const inflight = runtime.inflightFetch
@@ -781,22 +1028,28 @@ export function apply(ctx: Context, config: Config): void {
     run = (async (): Promise<void> => {
       let models: readonly WorkBuddyModelInfo[]
       try {
-        const credential = await runtime.store.resolve()
-        const resolvedIdentity = credentialIdentity(credential)
-        // `current()` established the identity that owns this fetch, but
-        // `resolve()` reads the desktop file again. The App can switch accounts
-        // between those reads; never send or persist B's directory as A's.
+        const credential = await runtime.accounts.primaryCredential()
+        if (credential === undefined) {
+          // The pool emptied between the caller's read and this one.
+          adoptIdentity(runtime, undefined)
+          return
+        }
+        const resolvedIdentity = credentialAccountId(credential)
+        // `syncVariant` established the identity that owns this fetch, but the
+        // primary is resolved again here (and may have just been refreshed).
+        // The desktop app can also switch accounts between those reads; never
+        // send or persist B's directory as A's.
         if (resolvedIdentity !== identity) {
           adoptIdentity(runtime, resolvedIdentity)
           await fetchCatalog(runtime, resolvedIdentity)
           return
         }
         models = await runtime.client.fetchModels(credential, controller.signal)
-        // The account can also change while the upstream request is in flight.
-        // Re-read before publishing so the just-finished document still belongs
-        // to the account that is currently selected in the desktop App.
-        const latest = await runtime.store.current()
-        const latestIdentity = latest === undefined ? undefined : credentialIdentity(latest)
+        // The primary can also change while the upstream request is in flight
+        // (a cooldown, a removal, a desktop switch). Re-read before publishing
+        // so the just-finished document still belongs to the account in effect.
+        const latest = await runtime.accounts.primaryCredential()
+        const latestIdentity = latest === undefined ? undefined : credentialAccountId(latest)
         if (latestIdentity !== identity) {
           adoptIdentity(runtime, latestIdentity)
           if (latestIdentity !== undefined) await fetchCatalog(runtime, latestIdentity)
@@ -843,35 +1096,61 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   /**
-   * Reconcile one variant with its credentials.
+   * Reconcile one variant with its account pool.
+   *
+   * Two things happen on every sweep, in this order:
+   *
+   * 1. **Capture the desktop app's sign-in**, if it is signed in. This is what
+   *    makes the desktop account an ordinary long-lived pool member: the pool
+   *    is the only thing that decides what the plugin may serve as, and signing
+   *    out of the app simply stops *adding* to it.
+   * 2. **Reconcile the primary**, which is the identity the catalog is fetched
+   *    for and the one the card's headline figures describe.
    *
    * Four transitions matter, and each is a different action:
    *
-   * - **none → some** (first sighting): reveal the group and fetch a catalog.
+   * - **none → some** (first account): reveal the group and fetch a catalog.
    * - **none → some, identity changed**: additionally drop the previous
    *   account's observations, so another user's probe answers cannot be read as
    *   the new account's.
-   * - **some → none**: hide the group and stop serving its models.
-   * - **same identity**: nothing to do — the store refreshes tokens on demand,
+   * - **some → none**: hide the group and stop serving its models. With the
+   *   pool, this means the pool is *empty* — the desktop app signing out no
+   *   longer hides anything.
+   * - **same identity**: nothing to do — the pool refreshes tokens on demand,
    *   and re-fetching on every rotation would hit the catalog endpoint for no
    *   new information.
    */
   const syncVariant = async (runtime: VariantRuntime): Promise<void> => {
     if (stopped || !runtime.registered) return
-    const credential = await runtime.store.current().catch((error: unknown) => {
-      // A region mismatch or an unreadable file is reported, not swallowed as
-      // "signed out": the user needs to know which file to fix.
-      ctx.logger.warn(`dsh-workbuddy-connect: ${runtime.variant.displayName} credential read failed`, error)
+    await runtime.accounts.captureDesktop().then(
+      () => { desktopReadError.delete(runtime.variant.id) },
+      (error: unknown) => {
+        // A region mismatch or an unreadable file is reported, not swallowed as
+        // "signed out": the user needs to know which file to fix.
+        desktopReadError.set(
+          runtime.variant.id,
+          error instanceof Error ? error.message.slice(0, 300) : String(error),
+        )
+        ctx.logger.warn(`dsh-workbuddy-connect: ${runtime.variant.displayName} credential read failed`, error)
+      },
+    )
+    if (stopped) return
+    // `primaryCredential` re-reads the desktop identity, so a file that was
+    // just refused is refused again here. That is deliberate (the pool must
+    // never adopt it), but the *sweep* must not turn a diagnosable refusal into
+    // an unhandled rejection: the reason was recorded above and the variant
+    // simply has no primary. The card reports the reason.
+    const credential = await runtime.accounts.primaryCredential().catch((error: unknown) => {
+      ctx.logger.warn(`dsh-workbuddy-connect: ${runtime.variant.displayName} account resolution failed`, error)
       return undefined
     })
-    if (stopped) return
 
     if (credential === undefined) {
       adoptIdentity(runtime, undefined)
       return
     }
 
-    const identity = credentialIdentity(credential)
+    const identity = credentialAccountId(credential)
     const known = lastIdentities.get(runtime.variant.id)
     if (known === identity && runtime.catalog.isVisible()) {
       // Same account, already showing something. One case still needs a fetch:
