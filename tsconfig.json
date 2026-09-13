@@ -18,11 +18,10 @@
   "exclude": [
     "src/client",
     "tests/probe-composer.spec.ts",
-    "tests/plugin-card.spec.ts",
     "tests/client-variants.spec.ts",
     "tests/slot-registration.spec.ts",
     "tests/qr-code.spec.ts",
-    "tests/accounts-tab.spec.ts",
-    "tests/floating-accounts.spec.ts"
+    "tests/floating-accounts.spec.ts",
+    "tests/settings-page.spec.ts"
   ]
 }

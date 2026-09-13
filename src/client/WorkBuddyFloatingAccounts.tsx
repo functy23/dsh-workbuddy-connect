@@ -21,7 +21,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { CSSProperties } from 'react'
 import type { WorkBuddyWebAccounts, WorkBuddyWebStatus } from '../status-paths.ts'
-import { CARD_VARIANTS } from './WorkBuddyPluginCard.tsx'
+import { CARD_VARIANTS } from './card-variants.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
 
 /** Copy function injected by the client registration. */
@@ -45,7 +45,10 @@ const panelStyle: CSSProperties = {
   overflowY: 'auto',
   padding: '10px 12px',
   border: '1px solid var(--dsw-alias-border-l2)',
-  borderRadius: 10,
+  // Matched to the settings cards' radius rather than the button radius: the
+  // window is a small panel, and DSH's own panels are noticeably rounder than
+  // the 10px this started at.
+  borderRadius: 14,
   background: 'var(--dsw-alias-bg-layer-1, rgba(255, 255, 255, 0.96))',
   boxShadow: 'var(--dsw-shadow-lv2)',
   color: 'var(--dsw-alias-label-primary)',
@@ -279,13 +282,13 @@ export function WorkBuddyFloatingAccounts({ t }: WorkBuddyFloatingAccountsProps)
         const accounts = status?.status === 'signed-in' ? status.accounts : undefined
         return (
           <div key={variant.id} style={groupStyle}>
-            <span style={groupNameStyle}>
-              <span
-                aria-hidden="true"
-                style={{ ...dotStyle, display: 'inline-block', marginRight: 6, background: statusColor(status?.status) }}
-              />
-              {t(variant.titleKey)}
-            </span>
+            {/*
+              * The product name carries no status dot: the dot belongs beside an
+              * account name, where it answers "which account is this and can it
+              * serve". A dot on the heading would repeat the same signal one
+              * level up and read as decoration.
+              */}
+            <span style={groupNameStyle}>{t(variant.titleKey)}</span>
             {accounts === undefined || accounts.accounts.length === 0
               ? <span style={groupNameStyle}>{t('floatingNoAccount')}</span>
               : accounts.accounts

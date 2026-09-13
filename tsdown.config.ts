@@ -25,6 +25,9 @@ const CLIENT_EXTERNALS = [
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-runtime/client',
   '@deepseek-ai/dsh-client-ui-slots',
+  // Declared by the settings page's slot; keeping it external matches how the
+  // other client-only packages are handled.
+  '@deepseek-ai/dsh-client-ui-settings/client',
   '@deepseek-ai/dsh-client-locale/client',
 ] as const
 

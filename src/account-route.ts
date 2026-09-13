@@ -86,6 +86,13 @@ export function parseAccountAction(text: string): WorkBuddyAccountAction | undef
   switch (wrapped['action']) {
     case 'add': return { action: 'add' }
     case 'refresh-credits': return { action: 'refresh-credits' }
+    case 'add-cookie': {
+      // The token is credential material, and is deliberately not validated
+      // beyond being a non-empty string: this route's job is to hand it to the
+      // host, which is where the decode and the region check live.
+      const token = stringField(wrapped['token'])
+      return token === undefined ? undefined : { action: 'add-cookie', token }
+    }
     case 'poll': {
       const state = stringField(wrapped['state'])
       return state === undefined ? undefined : { action: 'poll', state }

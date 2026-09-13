@@ -12,8 +12,10 @@
 
 import type { WorkBuddyAccount, WorkBuddyAccountPool } from './account-pool.ts'
 import { accountIdOf, credentialAccountId, credentialOf } from './account-pool.ts'
+import { profileFromToken } from './account-token.ts'
 import type { WorkBuddyCredential, WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyQrLogin } from './qr-login.ts'
+import { regionOf } from './upstream.ts'
 import type { WorkBuddyUpstreamClient } from './upstream.ts'
 import type { WorkBuddyVariant } from './variants.ts'
 
@@ -28,9 +30,17 @@ export interface WorkBuddyWebAccount {
   name: string
   label?: string
   nickname?: string
-  origin: 'desktop' | 'qr'
+  origin: 'desktop' | 'qr' | 'cookie'
   /** Login domain this account speaks to; the card reports the region from it. */
   domain: string
+  /**
+   * True when the account can renew itself.
+   *
+   * A pasted token carries no refresh token, so the card can tell the user that
+   * an expiring account needs a fresh paste rather than letting it fail
+   * silently at the next request.
+   */
+  renewable: boolean
   enabled: boolean
   /** Whether rotation may pick it right now (enabled, not benched, not dead). */
   available: boolean
@@ -278,6 +288,7 @@ export class WorkBuddyAccountService {
         ...account.nickname === undefined ? {} : { nickname: account.nickname },
         origin: account.origin,
         domain: account.domain,
+        renewable: account.refreshToken !== '',
         enabled: account.enabled,
         available: this.pool.isAvailable(account, this.now()),
         ...credits?.total === undefined ? {} : { credits: credits.total },
@@ -301,6 +312,53 @@ export class WorkBuddyAccountService {
       ...primary === undefined ? {} : { primary },
       ...desktopId === undefined ? {} : { desktop: desktopId },
     }
+  }
+
+  /**
+   * Add an account from a sign-in token pasted out of the web console.
+   *
+   * Everything is read out of the token itself — no request is made, so this
+   * cannot fail because an endpoint moved, and it works for the international
+   * product, which has no desktop app to capture from.
+   *
+   * The token's issuer decides which product it belongs to, and it must be
+   * *this* variant's: the same refusal the desktop file gets applies here,
+   * because accepting the other product's token would put a credential in the
+   * pool that every request is guaranteed to be rejected for, with no hint as
+   * to why. The stored `refreshToken` is empty by construction — the console
+   * issues none — so the account works until its `exp` and then needs the user
+   * to paste a fresh one.
+   *
+   * @returns the upsert outcome, or a refusal reason.
+   */
+  addCookieAccount(token: string): {
+    account?: WorkBuddyAccount
+    created?: boolean
+    reason?: string
+  } {
+    const profile = profileFromToken(token)
+    if (profile === undefined) {
+      return { reason: 'that does not look like a sign-in token (no readable payload)' }
+    }
+    if (profile.domain === '') {
+      return { reason: 'the token names an issuer this plugin does not recognise' }
+    }
+    if (regionOf(profile.domain) !== this.variant.region) {
+      const actual = regionOf(profile.domain) === 'global' ? 'WorkBuddy AI (international)' : 'WorkBuddy (CN)'
+      return { reason: `that is a ${actual} token; paste it into the matching product's dialog` }
+    }
+    const result = this.pool.upsert({
+      uid: profile.uid,
+      ...profile.enterpriseId === undefined ? {} : { enterpriseId: profile.enterpriseId },
+      ...profile.nickname === undefined ? {} : { nickname: profile.nickname },
+      domain: profile.domain,
+      accessToken: token.trim(),
+      refreshToken: '',
+      expiresAtMs: profile.expiresAtMs,
+      origin: 'cookie',
+    })
+    this.invalidateCredits(result.account.id)
+    return { account: result.account, created: result.created }
   }
 
   /** Add one QR sign-in to the pool. */

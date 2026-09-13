@@ -916,7 +916,7 @@ interface WorkBuddyCooldown {
   atMs: number;
 }
 /** How an account entered the pool. */
-type WorkBuddyAccountOrigin = 'desktop' | 'qr';
+type WorkBuddyAccountOrigin = 'desktop' | 'qr' | 'cookie';
 /** One account the plugin may send a request as. */
 interface WorkBuddyAccount {
   /** Stable identity: `uid:enterpriseId`. The pool's key. */
@@ -1196,9 +1196,17 @@ interface WorkBuddyWebAccount {
   name: string;
   label?: string;
   nickname?: string;
-  origin: 'desktop' | 'qr';
+  origin: 'desktop' | 'qr' | 'cookie';
   /** Login domain this account speaks to; the card reports the region from it. */
   domain: string;
+  /**
+   * True when the account can renew itself.
+   *
+   * A pasted token carries no refresh token, so the card can tell the user that
+   * an expiring account needs a fresh paste rather than letting it fail
+   * silently at the next request.
+   */
+  renewable: boolean;
   enabled: boolean;
   /** Whether rotation may pick it right now (enabled, not benched, not dead). */
   available: boolean;
@@ -1335,6 +1343,28 @@ declare class WorkBuddyAccountService {
     withCredits?: boolean;
     forceCredits?: boolean;
   }): Promise<WorkBuddyAccountSnapshot>;
+  /**
+   * Add an account from a sign-in token pasted out of the web console.
+   *
+   * Everything is read out of the token itself — no request is made, so this
+   * cannot fail because an endpoint moved, and it works for the international
+   * product, which has no desktop app to capture from.
+   *
+   * The token's issuer decides which product it belongs to, and it must be
+   * *this* variant's: the same refusal the desktop file gets applies here,
+   * because accepting the other product's token would put a credential in the
+   * pool that every request is guaranteed to be rejected for, with no hint as
+   * to why. The stored `refreshToken` is empty by construction — the console
+   * issues none — so the account works until its `exp` and then needs the user
+   * to paste a fresh one.
+   *
+   * @returns the upsert outcome, or a refusal reason.
+   */
+  addCookieAccount(token: string): {
+    account?: WorkBuddyAccount;
+    created?: boolean;
+    reason?: string;
+  };
   /** Add one QR sign-in to the pool. */
   addQrAccount(poll: Extract<Awaited<ReturnType<WorkBuddyQrLogin['poll']>>, {
     status: 'ready';
@@ -1360,6 +1390,16 @@ interface WorkBuddyQrChallenge$1 {
 /** Action requested from the account route. */
 type WorkBuddyAccountAction = {
   action: 'add';
+} |
+/**
+ * Add an account from a sign-in token pasted out of the web console.
+ *
+ * The token travels in the request body and is never echoed back: it is
+ * credential material, and the response describes the account, not the token.
+ */
+{
+  action: 'add-cookie';
+  token: string;
 } | {
   action: 'poll';
   state: string;
@@ -1393,7 +1433,7 @@ interface WorkBuddyAccountResult {
   reason?: string;
   /** Present for `add`: the challenge to render as a QR code. */
   challenge?: WorkBuddyQrChallenge$1;
-  /** Present for `poll`: the added account, once the scan completed. */
+  /** Present for `poll` and `add-cookie`: the added account's display name. */
   name?: string;
   created?: boolean;
   /** Present for `test`: whether a minimal streaming request succeeded. */

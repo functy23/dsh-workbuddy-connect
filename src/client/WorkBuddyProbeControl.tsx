@@ -23,11 +23,16 @@
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties } from 'react'
 import type { ModelDirectory } from '@deepseek-ai/dsh-client-ui-model-selection/client'
-import { CARD_VARIANTS, type WorkBuddyCardVariant, type WorkBuddyPluginCardInjected } from './WorkBuddyPluginCard.tsx'
+import { CARD_VARIANTS } from './card-variants.ts'
+import type { WorkBuddyCardVariant } from './card-variants.ts'
+import type { WorkBuddyTranslate } from './locales.ts'
+
+/** Props carrying the copy function every browser component receives. */
+export interface WorkBuddyTranslateHolder { t: WorkBuddyTranslate }
 import type { WorkBuddyWebProbeModel, WorkBuddyWebStatus } from '../status-paths.ts'
 
 /** Injected props; `directory` resolves the session's current model selection. */
-export interface WorkBuddyProbeControlProps extends WorkBuddyPluginCardInjected {
+export interface WorkBuddyProbeControlProps extends WorkBuddyTranslateHolder {
   directory: ModelDirectory['store']
 }
 
@@ -194,7 +199,7 @@ const noteDismissStyle: CSSProperties = {
  * The feature's static inline label. Deliberately not a state readout — see the
  * module comment.
  */
-function useLabel(t: WorkBuddyPluginCardInjected['t']): string {
+function useLabel(t: WorkBuddyTranslate): string {
   return t('probeLabel')
 }
 
@@ -209,7 +214,7 @@ function resultFor(status: WorkBuddyWebStatus, model: string): WorkBuddyWebProbe
  * two-part shape Fast Mode uses.
  */
 function tooltipText(
-  t: WorkBuddyPluginCardInjected['t'],
+  t: WorkBuddyTranslate,
   model: string,
   state: { busy: boolean; failed: boolean; result?: WorkBuddyWebProbeModel | undefined },
 ): string {
@@ -244,7 +249,7 @@ function ModelProbe({ model, card, label, t }: {
   model: string
   card: WorkBuddyCardVariant
   label: string
-} & WorkBuddyPluginCardInjected) {
+} & WorkBuddyTranslateHolder) {
   const [status, setStatus] = useState<WorkBuddyWebStatus>()
   const [busy, setBusy] = useState(false)
   const [confirming, setConfirming] = useState(false)
@@ -413,7 +418,7 @@ function ModelProbe({ model, card, label, t }: {
 }
 
 /** Compose the one-line outcome string the note bubble shows. */
-function noteText(t: WorkBuddyPluginCardInjected['t'], result: WorkBuddyWebProbeModel): string {
+function noteText(t: WorkBuddyTranslate, result: WorkBuddyWebProbeModel): string {
   if (result.validation === 'validating' && result.efforts.length > 0) {
     return t('probeNoteVerified', { levels: result.efforts.join(' / ') })
   }

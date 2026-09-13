@@ -1,5 +1,14 @@
 /** Plugin-card copy registered under the settings.workbuddy locale namespace. */
 
+/**
+ * The translation function every browser-side component receives.
+ *
+ * Declared here rather than on any one component: the settings page, the
+ * floating window, and the composer control all take the same function, and
+ * borrowing one component's prop type would tie the others to it.
+ */
+export type WorkBuddyTranslate = (key: WorkBuddySettingsKey, params?: Record<string, unknown>) => string
+
 export const en = {
   title: 'DSH WorkBuddy Connect',
   intro: 'Use the models in the WorkBuddy desktop app directly in DSH — zero configuration, ready out of the box.',
@@ -83,6 +92,20 @@ export const en = {
   accountQrInvalid: 'This sign-in is no longer valid. Start again.',
   accountEmpty: 'No accounts yet. Sign in to the desktop app, or add one by QR.',
   accountUnavailable: 'The host did not report its account pool. Update the plugin, or restart DSH.',
+  navWorkBuddy: 'DSH-WorkBuddy',
+  accountPageTitle: 'Accounts and credit',
+  accountAddCn: 'Add WorkBuddy account',
+  accountAddAi: 'Add WorkBuddy AI account',
+  accountLoginQr: 'Scan to sign in',
+  accountLoginToken: 'Sign-in token',
+  accountActionLogin: 'Add account',
+  accountTotalCredits: 'Total credit',
+  accountTokenBody: 'Paste the sign-in token from the WorkBuddy web console. It is stored on this machine only, and it cannot renew itself — when it expires you paste a new one.',
+  accountTokenPlaceholder: 'Paste the token here (it starts with eyJ…)',
+  accountSubmit: 'Add',
+  accountOpenLink: 'Open sign-in page',
+  accountExpired: 'Sign-in expired',
+
   accountRotateHint: 'Requests rotate between these accounts; one that answers "too many requests" is set aside for a while and tried again later.',
   accountRefreshCredits: 'Refresh balances',
   accountTest: 'Test',
@@ -200,6 +223,20 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   accountQrInvalid: '该登录已失效，请重新发起。',
   accountEmpty: '还没有账号。可在桌面 App 登录，或在此扫码添加。',
   accountUnavailable: '宿主未返回账号列表。请更新插件或重启 DSH。',
+  navWorkBuddy: 'DSH-WorkBuddy',
+  accountPageTitle: '账号与积分',
+  accountAddCn: '添加 WorkBuddy 账号',
+  accountAddAi: '添加 WorkBuddy AI 账号',
+  accountLoginQr: '扫码登录',
+  accountLoginToken: 'Cookie 登录',
+  accountActionLogin: '添加账号',
+  accountTotalCredits: '总积分',
+  accountTokenBody: '粘贴 WorkBuddy 网页控制台里的登录令牌。它只保存在本机，且无法自动续期 —— 过期后重新粘贴一份即可。',
+  accountTokenPlaceholder: '在此粘贴令牌（以 eyJ 开头）',
+  accountSubmit: '添加',
+  accountOpenLink: '打开登录页面',
+  accountExpired: '登录已过期',
+
   accountRotateHint: '请求会在这些账号之间轮换；被上游限流的账号会暂时搁置，稍后自动重试。',
   accountRefreshCredits: '刷新积分',
   accountTest: '测试',

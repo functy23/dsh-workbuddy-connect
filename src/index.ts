@@ -913,6 +913,20 @@ export function apply(ctx: Context, config: Config): void {
           challenge: { state: challenge.state, authUrl: challenge.authUrl, expiresAtMs: challenge.expiresAtMs },
         }
       }
+      case 'add-cookie': {
+        // Everything about the token is decided here, host-side: the browser
+        // posts it and receives a description of the account, never the token.
+        const added = accounts.addCookieAccount(action.token)
+        if (added.account === undefined) {
+          return { state: 'failed', reason: added.reason ?? 'the token was refused' }
+        }
+        return {
+          state: 'added',
+          name: added.account.label ?? added.account.nickname ?? added.account.uid.slice(0, 8),
+          created: added.created === true,
+          ...added.created === true ? {} : { reason: 'already in the pool; its token was replaced' },
+        }
+      }
       case 'cancel': {
         qr.cancel(action.state)
         return { state: 'ok' }

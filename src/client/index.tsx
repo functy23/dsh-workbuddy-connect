@@ -7,12 +7,13 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { WorkBuddyFloatingAccounts } from './WorkBuddyFloatingAccounts.tsx'
 import { WorkBuddyProbeControl } from './WorkBuddyProbeControl.tsx'
-import { CARD_VARIANTS, WorkBuddyPluginCard } from './WorkBuddyPluginCard.tsx'
-import type { WorkBuddyPluginCardInjected } from './WorkBuddyPluginCard.tsx'
+import { CARD_VARIANTS } from './card-variants.ts'
+import { WorkBuddySettingsPage } from './WorkBuddySettingsPage.tsx'
 import { en, zh } from './locales.ts'
-import type { WorkBuddySettingsKey } from './locales.ts'
+import type { WorkBuddySettingsKey, WorkBuddyTranslate } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -59,18 +60,24 @@ export function apply(ctx: ClientContext): void {
   try {
     const namespace = 'settings.workbuddy'
     ctx.effect(() => ctx.locale.register(namespace, { zh, en }), 'dsh-workbuddy-connect: settings copy')
-    const t = ctx.locale.bind(namespace) as WorkBuddyPluginCardInjected['t']
-    // One card per variant. They show different accounts, balances, and model
-    // sets, so a single merged card could not say which account a number
-    // belongs to. The slot is key-dispatched: two keys, one component.
-    for (const [index, variant] of CARD_VARIANTS.entries()) {
-      ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-        name: 'settings.plugin.item',
-        key: variant.id,
-        priority: 30 - index,
-        inject: (): WorkBuddyPluginCardInjected => ({ t, variant }),
-      }, WorkBuddyPluginCard))
-    }
+    const t = ctx.locale.bind(namespace) as WorkBuddyTranslate
+    /**
+     * The accounts live on their own settings page, not in the Plugins list.
+     *
+     * `settings.section` is what puts a destination in the settings navigation:
+     * the owner renders one page per entry and uses `label` as the nav text,
+     * re-registering on a locale change. So the pool, the balances, and the
+     * sign-in dialogs become a place a user can go to, while the Plugins tab
+     * goes back to describing plugins.
+     */
+    ctx.slots.inject('settings.section', () => ctx.slots.register({
+      name: 'settings.section',
+      id: 'dsh-workbuddy',
+      order: 40,
+      label: () => t('navWorkBuddy'),
+      locale: namespace,
+      inject: (): { t: WorkBuddyTranslate } => ({ t }),
+    }, WorkBuddySettingsPage))
     // The floating account window rides the conversation header's utilities
     // slot, but renders through a portal: the utility area is inside the header,
     // and the window's whole point is to sit over the transcript *without*
@@ -80,7 +87,7 @@ export function apply(ctx: ClientContext): void {
       name: 'conversation.session.header.utilities',
       id: 'workbuddy-floating-accounts',
       order: 90,
-      inject: (): { t: WorkBuddyPluginCardInjected['t'] } => ({ t }),
+      inject: (): { t: WorkBuddyTranslate } => ({ t }),
     }, WorkBuddyFloatingAccounts))
     ctx.inject(['modelDirectories'], scope => {
       scope.slots.inject('conversation.input.right', () => scope.slots.register({

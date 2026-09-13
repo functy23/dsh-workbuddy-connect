@@ -6,7 +6,7 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { WorkBuddyFloatingAccounts } from '../src/client/WorkBuddyFloatingAccounts.tsx'
-import { CARD_VARIANTS } from '../src/client/WorkBuddyPluginCard.tsx'
+import { CARD_VARIANTS } from '../src/client/card-variants.ts'
 import { en } from '../src/client/locales.ts'
 import type { WorkBuddyWebStatus } from '../src/status-paths.ts'
 
@@ -33,7 +33,7 @@ function signedIn(overrides: Record<string, unknown> = {}): WorkBuddyWebStatus {
     accounts: {
       accounts: [{
         id: 'uid-a:ent', uid: 'uid-a', name: '主账号', origin: 'desktop', domain: 'copilot.tencent.com',
-        enabled: true, available: true, credits: 9876, expiresAtMs: Date.now() + 3_600_000,
+        enabled: true, available: true, renewable: true, credits: 9876, expiresAtMs: Date.now() + 3_600_000,
         lastUsedAtMs: 0, addedAtMs: 0,
       }],
       primary: 'uid-a:ent',
@@ -110,6 +110,26 @@ describe('WorkBuddy floating account window', () => {
     expect(text).toContain(t(CARD_VARIANTS[1]!.titleKey))
   })
 
+  it('uses the panel radius and puts no status dot beside the product headings', async () => {
+    await mount(() => signedIn())
+    const panel = window_() as HTMLElement
+    // DSH's own panels are noticeably rounder than a button; the window is a
+    // panel, so it follows them rather than the 10px it started at.
+    expect(panel.style.borderRadius).toBe('14px')
+    // The dot belongs beside an account name, where it answers "can this
+    // account serve". On a heading it would repeat the same signal one level up
+    // and read as decoration.
+    const dots = [...panel.querySelectorAll('[aria-hidden="true"]')]
+    for (const dot of dots) {
+      const parent = dot.parentElement
+      // Every dot that is rendered must sit inside a row that also names an
+      // account; the heading span holds text only.
+      if (parent !== null) expect(parent.textContent ?? '').not.toBe(t(CARD_VARIANTS[0]!.titleKey))
+    }
+    // The account row's own dot is still there.
+    expect(dots.length).toBeGreaterThan(0)
+  })
+
   it('anchors itself to the conversation container, not to the viewport edge', async () => {
     await mount(() => signedIn())
     const panel = window_() as HTMLElement
@@ -126,7 +146,7 @@ describe('WorkBuddy floating account window', () => {
       accounts: {
         accounts: [{
           id: 'uid-b:ent', uid: 'uid-b', name: '小号', origin: 'qr', domain: 'copilot.tencent.com',
-          enabled: true, available: false, credits: 500, expiresAtMs: Date.now() + 3_600_000,
+          enabled: true, available: false, renewable: true, credits: 500, expiresAtMs: Date.now() + 3_600_000,
           lastUsedAtMs: 0, addedAtMs: 0,
           cooldown: { untilMs: Date.now() + 7 * 60_000, reason: 'rate', strikes: 1 },
         }],
@@ -193,11 +213,11 @@ describe('WorkBuddy floating account window', () => {
         accounts: [
           {
             id: 'uid-on:ent', uid: 'uid-on', name: '在用的', origin: 'desktop', domain: 'copilot.tencent.com',
-            enabled: true, available: true, credits: 10, expiresAtMs: Date.now() + 3_600_000, lastUsedAtMs: 0, addedAtMs: 0,
+            enabled: true, available: true, renewable: true, credits: 10, expiresAtMs: Date.now() + 3_600_000, lastUsedAtMs: 0, addedAtMs: 0,
           },
           {
             id: 'uid-off:ent', uid: 'uid-off', name: '停用的', origin: 'qr', domain: 'copilot.tencent.com',
-            enabled: false, available: false, credits: 20, expiresAtMs: 0, lastUsedAtMs: 0, addedAtMs: 0,
+            enabled: false, available: false, renewable: false, credits: 20, expiresAtMs: 0, lastUsedAtMs: 0, addedAtMs: 0,
           },
         ],
         floatingWindow: true,

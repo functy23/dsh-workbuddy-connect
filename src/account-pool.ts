@@ -62,7 +62,7 @@ export interface WorkBuddyCooldown {
 }
 
 /** How an account entered the pool. */
-export type WorkBuddyAccountOrigin = 'desktop' | 'qr'
+export type WorkBuddyAccountOrigin = 'desktop' | 'qr' | 'cookie'
 
 /** One account the plugin may send a request as. */
 export interface WorkBuddyAccount {
@@ -232,7 +232,10 @@ function normalizeAccount(row: WorkBuddyAccount): WorkBuddyAccount {
     ...typeof row.refreshExpiresAtMs === 'number' && Number.isFinite(row.refreshExpiresAtMs)
       ? { refreshExpiresAtMs: row.refreshExpiresAtMs }
       : {},
-    origin: row.origin === 'qr' ? 'qr' : 'desktop',
+    // An unknown origin in a file from a newer build degrades to 'desktop'
+    // rather than dropping the row: the credential itself is still usable, and
+    // losing it would be a worse failure than mislabelling how it arrived.
+    origin: row.origin === 'qr' ? 'qr' : row.origin === 'cookie' ? 'cookie' : 'desktop',
     enabled: row.enabled,
     lastUsedAtMs: typeof row.lastUsedAtMs === 'number' && Number.isFinite(row.lastUsedAtMs) ? row.lastUsedAtMs : 0,
     ...typeof row.addedAtMs === 'number' && Number.isFinite(row.addedAtMs) ? { addedAtMs: row.addedAtMs } : { addedAtMs: now },

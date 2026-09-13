@@ -34,16 +34,22 @@ Both the CN **WorkBuddy** and the international **WorkBuddy AI** apps are suppor
 
 ### Managing accounts
 
-Settings → Plugins → the matching card → the **Accounts** tab:
+Settings → **DSH-WorkBuddy** (its own entry in the settings navigation):
 
-- Lists every pooled account (name, origin, remaining credit, token expiry) with its state (available / rate limited / out of quota / sign-in expired / off).
-- **Add by QR**: opens a QR code; sign in on the phone app and scan. Scanning the same account twice does not duplicate it — it refreshes that account's sign-in.
-- **Test**: sends one minimal request to confirm the account actually works.
-- **Enable / Disable**: a disabled account is not used by rotation (re-enabling also clears any earlier set-aside).
-- **Rename**: display name only, to tell several accounts apart.
-- **Remove**: deletes the stored sign-in with it; restoring it requires scanning again.
+The page is **one card** with a block per product, separated by a small grey heading:
 
-The card header also has **Refresh balances**, which re-reads every account's credit.
+- The heading's right edge holds **Add account**; below it is that product's account list, each row showing the **account name, remaining credit**, and a **Test** and **Remove** button.
+- Each block ends with that product's **total credit**. The two totals stay separate and are never added together — the credits are not convertible and the accounts are not interchangeable.
+- A rate-limited or out-of-quota account replaces its balance with "rate limited · retry in N min"; an account added by a pasted token shows "sign-in expired" once its token lapses.
+
+**Add account** first asks which product, then which sign-in method:
+
+- **Scan to sign in** (CN only): a QR code to scan with the phone app, with an **Open sign-in page** button below it that opens the web sign-in in the **system browser**.
+- **Sign-in token**: paste the console's token (the `AccessToken` string starting with `eyJ`). The plugin reads the name, uid, and expiry out of it and stores it **on this machine only**.
+
+> **The international product offers the token route only**: no mobile service completes its QR flow, so no QR entry is shown.
+
+> **A pasted token cannot renew itself** (it carries no refresh token). When it expires, paste a fresh one; adding the same account again updates its token instead of creating a duplicate.
 
 
 ### Floating account window
@@ -56,7 +62,7 @@ A **floating window** sits in the top-right corner of the conversation, showing 
 
 ![Settings card showing the plugin](assets/2.png)
 
-The expanded card has four tabs: **Status** shows the account, token validity, total credit, catalog source, and reasoning-level detection; **Context** lists each model's context window (the international version distinguishes the default window from a larger selectable one); **Details** shows per-package credit and model offers; **Accounts** manages the pool (scan to add, test, enable, rename, remove). The CN and international versions each get their own card, showing their own accounts' information.
+The plugin card has three tabs: **Status** shows the account, token validity, total credit, catalog source, and reasoning-level detection; **Context** lists each model's context window (the international version distinguishes the default window from a larger selectable one); **Details** shows per-package credit and model offers. The account pool lives on the separate **DSH-WorkBuddy** settings page described above.
 
 ![Settings card showing account and remaining credit](assets/3.png)
 

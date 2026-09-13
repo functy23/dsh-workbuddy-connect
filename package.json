@@ -2,7 +2,7 @@
   "name": "dsh-workbuddy-connect",
   "displayName": "DSH WorkBuddy Connect",
   "description": "将 WorkBuddy 桌面 App 包含的模型自动接入 DeepSeek Harness — bring WorkBuddy desktop app models into DeepSeek Harness with zero configuration.",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "author": "corrinehu",
   "keywords": [
     "dsh-plugin",
@@ -57,6 +57,7 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-ui-settings-plugins",
         "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-model-selection",
@@ -68,6 +69,7 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
     "@deepseek-ai/dsh-atomic-write": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.5-rc.1",
     "@deepseek-ai/dsh-attachment": "^0.1.5-rc.1",
     "@deepseek-ai/dsh-home-paths": "^0.1.5-rc.1",
     "@deepseek-ai/dsh-host-webserver": "^0.1.5-rc.1",
@@ -86,6 +88,7 @@
     "@deepseek-ai/dsh-client-ui-conversation": "0.1.5-rc.1",
     "@deepseek-ai/dsh-client-ui-model-selection": "0.1.5-rc.1",
     "@deepseek-ai/dsh-client-ui-renderer": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.5-rc.1",
     "@deepseek-ai/dsh-client-ui-settings-plugins": "^0.1.5-rc.1",
     "@deepseek-ai/dsh-client-ui-slots": "^0.1.5-rc.1",
     "@deepseek-ai/dsh-credentials": "^0.1.5-rc.1",

@@ -118,6 +118,12 @@ async function mount(): Promise<{ port: number, pool: WorkBuddyAccountPool, acco
             created: added.created,
           }
         }
+        case 'add-cookie': {
+          const added = accounts.addCookieAccount(action.token)
+          return added.account === undefined
+            ? { state: 'failed', reason: added.reason ?? 'refused' }
+            : { state: 'added', created: added.created === true }
+        }
         case 'remove': return { state: pool.remove(action.id) ? 'ok' : 'failed' }
         case 'enable': return { state: pool.setEnabled(action.id, action.enabled) ? 'ok' : 'failed' }
         case 'reorder': { pool.reorder(action.ids); return { state: 'ok' } }

@@ -165,10 +165,22 @@ export interface WorkBuddyWebAccount {
   name: string
   label?: string
   nickname?: string
-  /** How the account entered the pool. */
-  origin: 'desktop' | 'qr'
+  /**
+   * How the account entered the pool.
+   *
+   * `cookie` means a sign-in token pasted from the web console; it is the only
+   * route into the international product, which has no desktop app to capture.
+   */
+  origin: 'desktop' | 'qr' | 'cookie'
   /** Login domain this account speaks to. */
   domain: string
+  /**
+   * Whether the account can renew its own sign-in.
+   *
+   * False for a pasted token, which carries no refresh token: the card uses this
+   * to tell the user an expiring account needs a fresh paste.
+   */
+  renewable: boolean
   /** Whether the user has it switched on. */
   enabled: boolean
   /** Whether rotation may pick it right now (enabled, not benched, not dead). */
@@ -235,6 +247,13 @@ export type WorkBuddyQrPoll =
 /** Action requested from the account route. */
 export type WorkBuddyAccountAction =
   | { action: 'add' }
+  /**
+   * Add an account from a sign-in token pasted out of the web console.
+   *
+   * The token travels in the request body and is never echoed back: it is
+   * credential material, and the response describes the account, not the token.
+   */
+  | { action: 'add-cookie', token: string }
   | { action: 'poll', state: string }
   | { action: 'cancel', state: string }
   | { action: 'remove', id: string }
@@ -251,7 +270,7 @@ export interface WorkBuddyAccountResult {
   reason?: string
   /** Present for `add`: the challenge to render as a QR code. */
   challenge?: WorkBuddyQrChallenge
-  /** Present for `poll`: the added account, once the scan completed. */
+  /** Present for `poll` and `add-cookie`: the added account's display name. */
   name?: string
   created?: boolean
   /** Present for `test`: whether a minimal streaming request succeeded. */
@@ -284,7 +303,7 @@ export type WorkBuddyWebStatus =
     nickname?: string
     domain?: string
     /** Where the account the headline figures describe came from. */
-    source?: 'desktop' | 'qr' | 'dsh'
+    source?: 'desktop' | 'qr' | 'cookie' | 'dsh'
     expiresAt?: number
     credits?: WorkBuddyWebCredits
     creditsError?: string

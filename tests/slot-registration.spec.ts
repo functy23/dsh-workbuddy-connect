@@ -1,22 +1,20 @@
 import { describe, expect, it } from 'vitest'
 import { SlotCore } from '@deepseek-ai/dsh-client-ui-slots'
-import { CARD_VARIANTS } from '../src/client/WorkBuddyPluginCard.tsx'
+import { CARD_VARIANTS } from '../src/client/card-variants.ts'
 
 /**
- * The plan's §7 gate: "同一 client bundle 注册两个 settings.plugin.item key…
- * 实施前以最小运行验证两个条目都可见；若插槽不支持，再定位限制，不直接复制
- * 整个插件." — i.e. register two cards from one plugin, and if the slot cannot
- * hold both, find the actual limit rather than duplicating the plugin.
+ * The settings-navigation contract.
  *
- * `settings.plugin.item` is a keyed slot, so whether two entries coexist is a
- * property of the real slot registry rather than of this plugin's code. These
- * tests drive the actual `SlotCore` to answer it, instead of trusting that the
- * registration shape works.
+ * The accounts used to live in two cards under the Plugins tab. They now live
+ * on one page of their own, which means the plugin depends on a different —
+ * and much less forgiving — slot: `settings.section` is a list whose owner
+ * renders **one page per entry** and reads `label` as the navigation text. If
+ * that registration silently does nothing, the page is unreachable and no
+ * amount of correct code behind it matters.
  *
- * Only the variant ids are needed from the card module (the components
- * themselves cannot render in this Node environment), and the register calls
- * are typed loosely on purpose: the point under test is the registry's
- * behaviour, not the DSH client typings.
+ * These tests drive the real `SlotCore` rather than trusting the registration
+ * shape, because "the slot accepts a list entry with a lazy label" is a
+ * property of the registry, not of this plugin.
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -28,86 +26,82 @@ const register = (core: SlotCore, options: Record<string, unknown>): unknown =>
   (core.register as any)(options, Component)
 
 /**
- * Declare `settings.plugin.item` the way DSH does: a parent entry contributes a
- * `children` table. `SlotCore` has no standalone declare method — the child
- * spec is owned by the registering entry, which is also why a slot can only be
- * claimed once.
+ * Declare `settings.section` the way DSH's settings shell does: a parent entry
+ * contributes a `children` table. `SlotCore` has no standalone declare method —
+ * the child spec belongs to the registering entry, which is also why one slot
+ * can only be claimed once.
  */
-function declarePluginItem(core: SlotCore): void {
+function declareSection(core: SlotCore): void {
   register(core, {
     name: 'root',
-    children: {
-      'settings.plugin.item': {
-        kind: 'keyed',
-        keyProps: { workbuddy: {}, 'workbuddy-ai': {} },
-      },
-    },
+    children: { 'settings.section': { kind: 'list' } },
   })
 }
 
-const entries = (core: SlotCore): any[] => (core.entries as any)('settings.plugin.item')
+const entries = (core: SlotCore): any[] => (core.entries as any)('settings.section')
 
-describe('settings.plugin.item holds both cards', () => {
-  it('accepts two registrations with distinct keys from one owner', () => {
+describe('settings.section carries the WorkBuddy page', () => {
+  it('accepts one page entry with an id, an order, and a lazy label', () => {
     const core = new SlotCore()
-    declarePluginItem(core)
+    declareSection(core)
     expect(() => {
-      for (const [index, variant] of CARD_VARIANTS.entries()) {
-        register(core, { name: 'settings.plugin.item', key: variant.id, priority: 30 - index })
-      }
+      register(core, {
+        name: 'settings.section',
+        id: 'dsh-workbuddy',
+        order: 40,
+        label: () => 'DSH-WorkBuddy',
+      })
     }).not.toThrow()
-    // Both entries are live, which is exactly what the two cards need.
-    expect(entries(core)).toHaveLength(2)
+    expect(entries(core)).toHaveLength(1)
   })
 
-  it('projects one cell per key, so both cards render', () => {
+  it('projects the navigation entry under the id the plugin registers', () => {
     const core = new SlotCore()
-    declarePluginItem(core)
-    for (const [index, variant] of CARD_VARIANTS.entries()) {
-      register(core, { name: 'settings.plugin.item', key: variant.id, priority: 30 - index })
-    }
-    // The projection returns the winning ENTRY per key, so the key is read off
-    // `options` — one cell each, which is what the settings page renders.
-    const cells = (core.entriesOfSlot as any)('settings.plugin.item') as { options: { key?: string } }[]
-    expect(cells).toHaveLength(2)
-    expect(cells.map(cell => cell.options.key).sort()).toEqual(['workbuddy', 'workbuddy-ai'])
+    declareSection(core)
+    register(core, { name: 'settings.section', id: 'dsh-workbuddy', order: 40, label: () => 'DSH-WorkBuddy' })
+    // The owner looks the entry up by `id`; a registration under any other id
+    // would render nothing while appearing to succeed.
+    const found = entries(core)[0]
+    expect(found).toBeTruthy()
+    expect(found.options.id).toBe('dsh-workbuddy')
   })
 
-  it('rejects a duplicate key at the same priority, which is why priorities differ', () => {
-    // The registry throws when the SAME key is registered twice at the same
-    // priority. Distinct keys would be fine at equal priority, but the plugin
-    // still staggers them so the CN card leads in the settings list; this test
-    // documents which rule is actually enforced.
+  it('keeps the label a function, so the shell re-registers on a locale change', () => {
     const core = new SlotCore()
-    declarePluginItem(core)
-    register(core, { name: 'settings.plugin.item', key: 'workbuddy', priority: 30 })
-    expect(() => register(core, { name: 'settings.plugin.item', key: 'workbuddy', priority: 30 }))
-      .toThrow(/already has an entry for key/)
+    declareSection(core)
+    // The shell does not subscribe to locale state; it relies on the registrant
+    // handing it fresh text. A string label captured at registration would
+    // freeze the nav item in whichever language was active at load.
+    register(core, { name: 'settings.section', id: 'dsh-workbuddy', order: 40, label: () => 'Account' })
+    expect(typeof entries(core)[0].options.label).toBe('function')
+    expect(entries(core)[0].options.label()).toBe('Account')
   })
 
-  it('allows distinct keys at the same priority, so staggering is presentation only', () => {
+  it('rejects a duplicate id at the same priority, which is why only one owner registers', () => {
     const core = new SlotCore()
-    declarePluginItem(core)
-    // If this ever threw, the two cards would depend on artificial priority
-    // differences to coexist — worth knowing explicitly.
-    expect(() => {
-      register(core, { name: 'settings.plugin.item', key: 'workbuddy', priority: 30 })
-      register(core, { name: 'settings.plugin.item', key: 'workbuddy-ai', priority: 30 })
-    }).not.toThrow()
-    expect(entries(core)).toHaveLength(2)
-  })
-
-  it('requires an explicit key, which is why each card passes one', () => {
-    const core = new SlotCore()
-    declarePluginItem(core)
-    // This is the rc.7 breakage the client entry's try/catch exists for.
-    expect(() => register(core, { name: 'settings.plugin.item' }))
-      .toThrow(/requires options.key/)
+    declareSection(core)
+    register(core, { name: 'settings.section', id: 'dsh-workbuddy', order: 40 })
+    // A list slot names the conflict by id (a keyed slot would say "for key").
+    expect(() => register(core, { name: 'settings.section', id: 'dsh-workbuddy', order: 40 }))
+      .toThrow(/already has an entry with id "dsh-workbuddy"/)
   })
 
   it('rejects registering into an undeclared slot', () => {
     const core = new SlotCore()
-    expect(() => register(core, { name: 'settings.plugin.item', key: 'workbuddy' }))
+    expect(() => register(core, { name: 'settings.section', id: 'dsh-workbuddy' }))
       .toThrow(/not declared/)
+  })
+
+  it('still pairs each product with its own routes', () => {
+    // The page renders both products; a variant whose statusPath pointed at the
+    // other's document would show one product's accounts under the other's
+    // heading. This is the one invariant the page cannot check for itself.
+    const paths = CARD_VARIANTS.map(variant => variant.statusPath)
+    expect(new Set(paths).size).toBe(CARD_VARIANTS.length)
+    expect(new Set(CARD_VARIANTS.map(variant => variant.accountPath)).size).toBe(CARD_VARIANTS.length)
+    for (const variant of CARD_VARIANTS) {
+      expect(variant.accountPath).not.toBe(variant.statusPath)
+      expect(variant.probePath).not.toBe(variant.statusPath)
+    }
   })
 })
