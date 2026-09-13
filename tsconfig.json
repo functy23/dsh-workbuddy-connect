@@ -22,6 +22,7 @@
     "tests/slot-registration.spec.ts",
     "tests/qr-code.spec.ts",
     "tests/floating-accounts.spec.ts",
-    "tests/settings-page.spec.ts"
+    "tests/settings-page.spec.ts",
+    "tests/segmented.spec.ts"
   ]
 }

@@ -124,6 +124,18 @@ export interface WorkBuddyAdapterOptions {
    * upstream left undeclared; absent means declared-set-only behavior.
    */
   observe?: (modelId: string) => WorkBuddyProbeRecord | undefined
+  /**
+   * The context window to run a model at, when the user has chosen one.
+   *
+   * @param modelId - the model being described.
+   * @param declared - every window the upstream offers for it.
+   * @returns the chosen length, or undefined to use the upstream default.
+   *
+   * This changes the request, not just the display: pi-ai derives a request's
+   * output ceiling from `contextWindow`, so a model running at 1M sends a
+   * different cap than the same model running at 200K.
+   */
+  resolveContextWindow?: (modelId: string, declared: readonly number[]) => number | undefined
 }
 
 /** What {@link createWorkBuddyAdapter} hands back. */
@@ -239,7 +251,15 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
     // The OpenAI SDK pi-ai drives appends `/chat/completions` to baseURL,
     // so the shim's routes line up with the `/v1` prefix in place.
     const baseUrl = `${shim.baseUrl()}/v1`
-    return catalog.current().map(info => toPiModel(info, baseUrl, observe?.(info.id), providerId))
+    return catalog.current().map(info => {
+      // A model the upstream declares several windows for runs at the user's
+      // choice. This is not cosmetic: pi-ai clamps a request's output budget to
+      // `contextWindow - promptTokens - safety`, so the value returned here is
+      // what lets a long transcript continue instead of being cut short.
+      const chosen = options.resolveContextWindow?.(info.id, info.supportedContextWindows ?? [])
+      const effective = chosen === undefined ? info : { ...info, contextWindow: chosen }
+      return toPiModel(effective, baseUrl, observe?.(info.id), providerId)
+    })
   }
 
   const base = createProvider({

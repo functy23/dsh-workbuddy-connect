@@ -26,6 +26,7 @@ import { WorkBuddyRotation } from './rotation.ts'
 import { FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatalog } from './catalog.ts'
 import { workbuddyCatalogPath, WorkBuddyCatalogStore } from './catalog-store.ts'
 import { createWorkBuddyAdapter } from './adapter.ts'
+import { WorkBuddyContextPreference } from './context-preference.ts'
 import { createWorkBuddyShim } from './shim.ts'
 import { WorkBuddyProbeService } from './probe-service.ts'
 import { newestFirst, WorkBuddyProbeStore, workbuddyProbePath } from './probe-store.ts'
@@ -323,6 +324,13 @@ interface VariantRuntime {
   accounts: WorkBuddyAccountService
   /** The QR sign-in flow, one per variant so the region is fixed by construction. */
   qr: WorkBuddyQrLogin
+  /**
+   * The context window each model should run at, when the user has chosen one.
+   *
+   * Read by the adapter on every model listing, which is what makes the choice
+   * affect the request rather than only the card.
+   */
+  contextPreference: WorkBuddyContextPreference
   probeStore: WorkBuddyProbeStore
   probeService: WorkBuddyProbeService
   /**
@@ -412,6 +420,7 @@ function createVariantRuntime(
     refresh: credential => client.refreshToken(credential),
   })
   const pool = new WorkBuddyAccountPool({ variant })
+  const contextPreference = new WorkBuddyContextPreference({ variant })
   const qr = new WorkBuddyQrLogin({ variant })
   const accounts = new WorkBuddyAccountService({ variant, pool, store, client, qr })
   const fallback = fallbackFor(variant)
@@ -453,6 +462,7 @@ function createVariantRuntime(
     catalog,
     pool,
     accounts,
+    contextPreference,
     qr,
     probeStore,
     probeService,
@@ -601,6 +611,7 @@ async function startVariant(ctx: Context, runtime: VariantRuntime): Promise<bool
       catalog,
       resolveAttachments: () => ctx.get('attachments'),
       observe: modelId => probeService.recordFor(modelId),
+      resolveContextWindow: (modelId, declared) => runtime.contextPreference.resolve(modelId, declared),
     })
     invalidate = workbuddy.invalidate
     runtime.invalidate = () => {
@@ -772,6 +783,7 @@ export function apply(ctx: Context, config: Config): void {
         accounts: runtime.accounts,
         client: runtime.client,
         models: () => runtime.catalog.current(),
+        resolveContextWindow: (modelId, declared) => runtime.contextPreference.resolve(modelId, declared),
         catalog: () => catalogSection(runtime),
         probe: () => probeSection(runtime, current().probeConsent === true),
         floatingWindow: () => current().floatingAccounts !== false,
@@ -926,6 +938,22 @@ export function apply(ctx: Context, config: Config): void {
           created: added.created === true,
           ...added.created === true ? {} : { reason: 'already in the pool; its token was replaced' },
         }
+      }
+      case 'context': {
+        // Refused unless the upstream actually offers that length: accepting an
+        // arbitrary number would let a stale card widen a window the model does
+        // not have, and the request would fail upstream with no explanation.
+        const model = runtime.catalog.current().find(entry => entry.id === action.model)
+        if (model === undefined) return { state: 'failed', reason: 'no such model' }
+        const declared = model.supportedContextWindows ?? []
+        if (!declared.includes(action.length)) {
+          return { state: 'failed', reason: 'that model does not offer that context length' }
+        }
+        runtime.contextPreference.set(action.model, action.length)
+        // The window is part of the model descriptor, so the provider's snapshot
+        // has to be rebuilt before the next request sees the new ceiling.
+        runtime.invalidate?.()
+        return { state: 'ok' }
       }
       case 'cancel': {
         qr.cancel(action.state)

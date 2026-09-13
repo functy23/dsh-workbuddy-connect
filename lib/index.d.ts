@@ -458,6 +458,15 @@ interface WorkBuddyVariant {
    * independent rotations.
    */
   accountFilename: string;
+  /**
+   * Basename of the plugin-owned context-length preference file under
+   * `$DSH_HOME`.
+   *
+   * One per variant for the same reason as the pools: the two products declare
+   * different windows for the same model id, so a length chosen for one must not
+   * be applied to the other.
+   */
+  contextFilename: string;
   /** Basename of the plugin-owned probe-record file under `$DSH_HOME`. */
   probeFilename: string;
   /**
@@ -872,6 +881,18 @@ interface WorkBuddyAdapterOptions {
    * upstream left undeclared; absent means declared-set-only behavior.
    */
   observe?: (modelId: string) => WorkBuddyProbeRecord | undefined;
+  /**
+   * The context window to run a model at, when the user has chosen one.
+   *
+   * @param modelId - the model being described.
+   * @param declared - every window the upstream offers for it.
+   * @returns the chosen length, or undefined to use the upstream default.
+   *
+   * This changes the request, not just the display: pi-ai derives a request's
+   * output ceiling from `contextWindow`, so a model running at 1M sends a
+   * different cap than the same model running at 200K.
+   */
+  resolveContextWindow?: (modelId: string, declared: readonly number[]) => number | undefined;
 }
 /** What {@link createWorkBuddyAdapter} hands back. */
 interface WorkBuddyAdapter {
@@ -1425,6 +1446,18 @@ type WorkBuddyAccountAction = {
   id: string;
 } | {
   action: 'refresh-credits';
+} |
+/**
+ * Choose which context length a model runs at.
+ *
+ * A write because it changes subsequent requests, not just the display: the
+ * adapter reports the chosen window to pi-ai, which derives each request's
+ * output ceiling from it.
+ */
+{
+  action: 'context';
+  model: string;
+  length: number;
 };
 /** What an account action answers with. */
 interface WorkBuddyAccountResult {

@@ -32,6 +32,7 @@ import type {
   WorkBuddyWebStatus,
 } from '../status-paths.ts'
 import { encodeQrCode } from './qr-code.ts'
+import { SegmentedControl } from './segmented.tsx'
 import { CARD_VARIANTS } from './card-variants.ts'
 import type { WorkBuddyCardVariant } from './card-variants.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
@@ -99,6 +100,17 @@ const balanceStyle: CSSProperties = {
   whiteSpace: 'nowrap',
 }
 const metaStyle: CSSProperties = { fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-tertiary)' }
+/** A promotional or "free" chip beside a model name. */
+const badgeStyle: CSSProperties = {
+  flex: '0 0 auto',
+  padding: '1px 8px',
+  borderRadius: 999,
+  fontSize: 11,
+  lineHeight: '18px',
+  background: 'var(--dsw-alias-state-success-subtle, rgba(34, 160, 107, 0.12))',
+  color: 'var(--dsw-alias-state-success-primary, #22a06b)',
+  whiteSpace: 'nowrap',
+}
 const rowEndStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, flex: '0 0 auto' }
 const buttonStyle: CSSProperties = {
   boxSizing: 'border-box',
@@ -164,36 +176,6 @@ const dialogStyle: CSSProperties = {
 const dialogTitleStyle: CSSProperties = { margin: 0, fontSize: 16, lineHeight: '24px', fontWeight: 600, textAlign: 'center' }
 const dialogBodyStyle: CSSProperties = { margin: 0, fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-secondary)' }
 const dialogActionsStyle: CSSProperties = { display: 'flex', justifyContent: 'flex-end', gap: 8 }
-/** The centred two-segment switch at the top of the add dialog. */
-const segmentStyle: CSSProperties = {
-  display: 'flex',
-  alignSelf: 'center',
-  padding: 3,
-  border: '1px solid var(--dsw-alias-border-l2)',
-  borderRadius: 999,
-  background: 'var(--dsw-alias-bg-layer-2, rgba(0, 0, 0, 0.05))',
-}
-const segmentItemStyle: CSSProperties = {
-  padding: '5px 18px',
-  border: 0,
-  borderRadius: 999,
-  background: 'transparent',
-  color: 'var(--dsw-alias-label-secondary)',
-  // `font: inherit` plus a per-state `fontWeight` is the shorthand/non-shorthand
-  // mix React warns about, so the family and size are spelled out instead.
-  fontFamily: 'inherit',
-  fontSize: 13,
-  lineHeight: '18px',
-  fontWeight: 400,
-  cursor: 'pointer',
-  whiteSpace: 'nowrap',
-}
-const segmentActiveStyle: CSSProperties = {
-  background: 'var(--dsw-alias-bg-layer-1, #fff)',
-  color: 'var(--dsw-alias-label-primary)',
-  fontWeight: 600,
-  boxShadow: 'var(--dsw-shadow-lv1, 0 1px 2px rgba(0, 0, 0, 0.08))',
-}
 const qrFrameStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
@@ -322,8 +304,102 @@ function AccountRow({ account, busy, now, t, onAction }: {
   )
 }
 
+/** A token count as the switch's label: 1M reads better than 1000000. */
+function shortTokens(tokens: number): string {
+  if (tokens >= 1_000_000 && tokens % 1_000_000 === 0) return `${String(tokens / 1_000_000)}M`
+  if (tokens >= 1_000 && tokens % 1_000 === 0) return `${String(tokens / 1_000)}K`
+  return String(tokens)
+}
+
+/**
+ * The model list for one product, with a context-length switch where there is a
+ * choice and a detection button per model.
+ *
+ * The switch is the reason this block is not read-only: a model the upstream
+ * publishes several windows for runs at whichever one is selected, which is what
+ * lets a long transcript continue. It is a write, so it goes through the same
+ * key-bearing route the account actions use.
+ */
+function ModelsBlock({ variant, status, busy, t, onContext, onRefresh }: {
+  variant: WorkBuddyCardVariant
+  status: WorkBuddyWebStatus | undefined
+  busy: boolean
+  t: Translate
+  onContext: (model: string, length: number) => void
+  onRefresh: () => void
+}): React.ReactNode {
+  const signedIn = status !== undefined && status.status === 'signed-in' ? status : undefined
+  const models = signedIn?.models ?? []
+  const catalog = signedIn?.catalog
+  const format = new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short' })
+  return (
+    <div style={groupStyle}>
+      <div style={groupHeadStyle}>
+        <h3 style={groupTitleStyle}>
+          {t('modelsHeading')}
+          {models.length === 0 ? '' : ` · ${t('modelsCount', { count: models.length })}`}
+        </h3>
+        <span style={rowEndStyle}>
+          {catalog === undefined ? null : (
+            <span style={metaStyle}>
+              {catalog.source === 'live' && catalog.fetchedAt !== undefined
+                ? t('modelsSourceLive', { time: format.format(new Date(catalog.fetchedAt)) })
+                : catalog.source === 'saved' && catalog.fetchedAt !== undefined
+                  ? t('modelsSourceSaved', { time: format.format(new Date(catalog.fetchedAt)) })
+                  : t('modelsSourceFallback')}
+            </span>
+          )}
+          <button type="button" style={buttonStyle} disabled={busy} onClick={onRefresh}>
+            {t('modelsRefresh')}
+          </button>
+        </span>
+      </div>
+      {models.length === 0
+        ? <p style={metaStyle}>{t('modelsEmpty')}</p>
+        : models.map(model => (
+            <div key={model.id} style={rowStyle}>
+              <span style={rowMainStyle}>
+                <span style={nameStyle} title={model.name}>{model.name}</span>
+                {/* Promotions sit beside the name: they are part of what the
+                    row is offering, and a separate column would push the
+                    switch off the edge. */}
+                {model.badges?.map(badge => (
+                  <span key={badge} style={badgeStyle}>{badge}</span>
+                ))}
+                {model.free === true ? <span style={badgeStyle}>{t('freeModel')}</span> : null}
+                {model.credits === undefined
+                  ? model.rateUnknown === true ? <span style={metaStyle}>{t('rateUnknown')}</span> : null
+                  : <span style={metaStyle}>{t('rate', { rate: model.credits })}</span>}
+              </span>
+              <span style={rowEndStyle}>
+                {model.contextChoices === undefined || model.contextChoices.length < 2
+                  // A single declared window has nothing to switch between, so
+                  // it is reported as a fact rather than offered as a control.
+                  ? model.contextWindow === undefined
+                    ? null
+                    : <span style={metaStyle}>{t('contextHeading')} {shortTokens(model.contextWindow)}</span>
+                  : <SegmentedControl
+                      dense
+                      label={`${t('contextLabel')}: ${model.name}`}
+                      disabled={busy}
+                      value={model.contextChoice ?? model.contextChoices[0] ?? 0}
+                      options={model.contextChoices.map(length => ({
+                        value: length,
+                        // Short and honest at both scales: 1M, not 1000K.
+                        label: shortTokens(length),
+                        title: t('contextSwitchTitle', { size: shortTokens(length) }),
+                      }))}
+                      onChange={length => { onContext(model.id, length) }}
+                    />}
+              </span>
+            </div>
+          ))}
+    </div>
+  )
+}
+
 /** Everything one product's block contains. */
-function VariantBlock({ variant, status, busy, now, t, onAdd, onAction }: {
+function VariantBlock({ variant, status, busy, now, t, onAdd, onAction, onContext, onRefreshModels }: {
   variant: WorkBuddyCardVariant
   status: WorkBuddyWebStatus | undefined
   busy: boolean
@@ -331,6 +407,8 @@ function VariantBlock({ variant, status, busy, now, t, onAdd, onAction }: {
   t: Translate
   onAdd: (variant: WorkBuddyCardVariant) => void
   onAction: (action: WorkBuddyAccountAction) => void
+  onContext: (model: string, length: number) => void
+  onRefreshModels: () => void
 }): React.ReactNode {
   const accounts = status !== undefined && 'accounts' in status ? status.accounts : undefined
   const list = accounts?.accounts ?? []
@@ -359,6 +437,17 @@ function VariantBlock({ variant, status, busy, now, t, onAdd, onAction }: {
             : new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(total)}
         </span>
       </div>
+      {/* Accounts first, models below: the model list is the longer one and the
+          one you come back to, so putting the pool above it keeps the short,
+          occasionally-changed block out of its way. */}
+      <ModelsBlock
+        variant={variant}
+        status={status}
+        busy={busy}
+        t={t}
+        onContext={onContext}
+        onRefresh={onRefreshModels}
+      />
     </div>
   )
 }
@@ -464,19 +553,16 @@ function AddAccountDialog({ variant, t, busy, error, onCancel, onSubmitQr, onPol
         <h3 style={dialogTitleStyle}>{t('accountAddTitle')}</h3>
         {qrSupported
           ? (
-            <div style={segmentStyle} role="tablist">
-              {(['qr', 'token'] as const).map(id => (
-                <button
-                  key={id}
-                  type="button"
-                  role="tab"
-                  aria-selected={mode === id}
-                  style={{ ...segmentItemStyle, ...(mode === id ? segmentActiveStyle : {}) }}
-                  onClick={() => { setMode(id) }}
-                >
-                  {t(id === 'qr' ? 'accountLoginQr' : 'accountLoginToken')}
-                </button>
-              ))}
+            <div style={{ display: 'flex', justifyContent: 'center' }}>
+              <SegmentedControl
+                label={t('accountActionLogin')}
+                value={mode}
+                options={[
+                  { value: 'qr' as const, label: t('accountLoginQr') },
+                  { value: 'token' as const, label: t('accountLoginToken') },
+                ]}
+                onChange={setMode}
+              />
             </div>
           )
           : null}
@@ -675,6 +761,36 @@ export function WorkBuddySettingsPage({ t }: WorkBuddySettingsPageProps): React.
     }
   }, [readAll, run, t])
 
+  /**
+   * Ask the host to re-fetch this product's model list.
+   *
+   * Shares the probe route's `refresh` action rather than the account route:
+   * the work is a catalog fetch, and that is what the probe route already does.
+   */
+  const refreshModels = useCallback((variant: WorkBuddyCardVariant): void => {
+    const key = keyFor(variant)
+    if (key === undefined) return
+    setBusy(true)
+    setError(undefined)
+    void fetch(variant.probePath, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-WorkBuddy-Probe-Key': key },
+      credentials: 'same-origin',
+      body: JSON.stringify({ action: 'refresh' }),
+    })
+      .then(async response => {
+        const value: unknown = await response.json().catch(() => undefined)
+        if (!response.ok) {
+          setError(`HTTP ${String(response.status)}`)
+        } else if (typeof value === 'object' && value !== null && 'state' in value && value.state === 'failed') {
+          setError(String((value as Record<string, unknown>)['reason'] ?? t('requestFailed')))
+        }
+        await readAll()
+      })
+      .catch((cause: unknown) => { setError(cause instanceof Error ? cause.message : t('requestFailed')) })
+      .finally(() => { if (mounted.current) setBusy(false) })
+  }, [keyFor, readAll, t])
+
   const accountAction = useCallback((variant: WorkBuddyCardVariant, action: WorkBuddyAccountAction): void => {
     setError(undefined)
     setBusy(true)
@@ -706,6 +822,8 @@ export function WorkBuddySettingsPage({ t }: WorkBuddySettingsPageProps): React.
             // would skip the choice the user was just offered.
             onAdd={() => { setError(undefined); setPicking(true) }}
             onAction={action => { accountAction(variant, action) }}
+            onContext={(model, length) => { accountAction(variant, { action: 'context', model, length }) }}
+            onRefreshModels={() => { refreshModels(variant) }}
           />
         ))}
       </div>

@@ -51,6 +51,15 @@ export interface WorkBuddyVariant {
    * independent rotations.
    */
   accountFilename: string
+  /**
+   * Basename of the plugin-owned context-length preference file under
+   * `$DSH_HOME`.
+   *
+   * One per variant for the same reason as the pools: the two products declare
+   * different windows for the same model id, so a length chosen for one must not
+   * be applied to the other.
+   */
+  contextFilename: string
   /** Basename of the plugin-owned probe-record file under `$DSH_HOME`. */
   probeFilename: string
   /**
@@ -80,6 +89,7 @@ export const WORKBUDDY_VARIANTS: readonly WorkBuddyVariant[] = [
     desktopFilename: 'workbuddy-desktop.info',
     ownFilename: '.workbuddy-auth.json',
     accountFilename: '.workbuddy-accounts.json',
+    contextFilename: '.workbuddy-context.json',
     probeFilename: '.workbuddy-probe.json',
     catalogFilename: '.workbuddy-catalog.json',
     statusPath: WORKBUDDY_STATUS_PATH,
@@ -95,6 +105,7 @@ export const WORKBUDDY_VARIANTS: readonly WorkBuddyVariant[] = [
     desktopFilename: 'workbuddy-desktop-ai.info',
     ownFilename: '.workbuddy-ai-auth.json',
     accountFilename: '.workbuddy-ai-accounts.json',
+    contextFilename: '.workbuddy-ai-context.json',
     probeFilename: '.workbuddy-ai-probe.json',
     catalogFilename: '.workbuddy-ai-catalog.json',
     statusPath: WORKBUDDY_AI_STATUS_PATH,

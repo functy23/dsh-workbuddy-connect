@@ -155,6 +155,21 @@ export interface WorkBuddyWebModelBadge {
    */
   maxContextWindow?: number
   maxInputTokens?: number
+  /**
+   * Every context length the upstream offers for this model, ascending.
+   *
+   * Present only when there is a choice to make (two or more lengths); a model
+   * with a single window has nothing to switch between and gets no control.
+   */
+  contextChoices?: readonly number[]
+  /**
+   * Which of {@link contextChoices} is in effect — the user's pick, or the
+   * upstream default when they have not chosen.
+   *
+   * This is the value the plugin actually runs the model at, so a card that
+   * shows it is showing the truth about the request, not a preference.
+   */
+  contextChoice?: number
 }
 
 /** One pooled account as the browser renders it. Never carries token material. */
@@ -262,6 +277,14 @@ export type WorkBuddyAccountAction =
   | { action: 'reorder', ids: readonly string[] }
   | { action: 'test', id: string }
   | { action: 'refresh-credits' }
+  /**
+   * Choose which context length a model runs at.
+   *
+   * A write because it changes subsequent requests, not just the display: the
+   * adapter reports the chosen window to pi-ai, which derives each request's
+   * output ceiling from it.
+   */
+  | { action: 'context', model: string, length: number }
 
 /** What an account action answers with. */
 export interface WorkBuddyAccountResult {

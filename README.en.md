@@ -42,6 +42,16 @@ The page is **one card** with a block per product, separated by a small grey hea
 - Each block ends with that product's **total credit**. The two totals stay separate and are never added together — the credits are not convertible and the accounts are not interchangeable.
 - A rate-limited or out-of-quota account replaces its balance with "rate limited · retry in N min"; an account added by a pasted token shows "sign-in expired" once its token lapses.
 
+Below the accounts is that product's **model list**, with a refresh button and
+the list's provenance (live / saved / built-in). Each row shows the model
+name, its promotion badges and rate, and its context window.
+
+**The context length is switchable**: when the upstream declares more than one
+length for a model (200K / 1M, say), the row carries a sliding switch. Choosing
+one **changes the request** — the plugin reports the chosen length to DSH, which
+derives the model's output ceiling and context trimming from it. A model with a
+single declared window gets no switch, because there is nothing to choose.
+
 **Add account** first asks which product, then which sign-in method:
 
 - **Scan to sign in** (CN only): a QR code to scan with the phone app, with an **Open sign-in page** button below it that opens the web sign-in in the **system browser**.

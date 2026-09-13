@@ -124,6 +124,7 @@ async function mount(): Promise<{ port: number, pool: WorkBuddyAccountPool, acco
             ? { state: 'failed', reason: added.reason ?? 'refused' }
             : { state: 'added', created: added.created === true }
         }
+        case 'context': return { state: 'ok' }
         case 'remove': return { state: pool.remove(action.id) ? 'ok' : 'failed' }
         case 'enable': return { state: pool.setEnabled(action.id, action.enabled) ? 'ok' : 'failed' }
         case 'reorder': { pool.reorder(action.ids); return { state: 'ok' } }

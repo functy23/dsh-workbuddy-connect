@@ -33,6 +33,13 @@ export interface WorkBuddyStatusRouteOptions {
   /** Resolve the current model catalog for free/badge display. */
   models: () => readonly WorkBuddyModelInfo[]
   /**
+   * The context window a model is running at, when the user has chosen one.
+   *
+   * Shared with the adapter so the figure on the card and the ceiling in the
+   * request can never disagree.
+   */
+  resolveContextWindow?: (modelId: string, declared: readonly number[]) => number | undefined
+  /**
    * Compact probe state for the card. Optional so the status route keeps
    * working on its own in tests and headless profiles.
    */
@@ -153,6 +160,14 @@ export async function workBuddyWebStatus(
       // when the upstream said nothing.
       const supported = model.supportedContextWindows ?? []
       const maxContextWindow = supported.length > 0 ? Math.max(...supported) : undefined
+      // The window the model will actually run at: the user's choice when they
+      // have made one and the upstream still offers it, else the default the
+      // catalog reported. The card shows this figure, so it must be the same
+      // one the adapter hands pi-ai.
+      const chosen = deps.resolveContextWindow?.(model.id, supported)
+      const effective = chosen ?? model.contextWindow
+      // A control is only worth showing when there is something to choose.
+      const choices = supported.length > 1 ? [...supported].sort((left, right) => left - right) : undefined
       return {
         id: model.id,
         name: model.name,
@@ -164,10 +179,10 @@ export async function workBuddyWebStatus(
         // cached row): the card then says the price needs a refresh instead of
         // repeating a stale figure or implying the model is free.
         ...model.billing?.rateUnknown === true ? { rateUnknown: true as const } : {},
-        // Verbatim from the upstream catalog; omitted when it said nothing.
-        ...typeof model.contextWindow === 'number' && model.contextWindow > 0
-          ? { contextWindow: model.contextWindow }
-          : {},
+        // The window in force, which is the upstream's default unless the user
+        // chose one of the other lengths it declares.
+        ...typeof effective === 'number' && effective > 0 ? { contextWindow: effective } : {},
+        ...choices === undefined ? {} : { contextChoices: choices, contextChoice: effective },
         ...maxContextWindow === undefined || maxContextWindow === model.contextWindow
           ? {}
           : { maxContextWindow },

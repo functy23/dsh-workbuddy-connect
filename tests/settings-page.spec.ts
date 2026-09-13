@@ -276,6 +276,77 @@ describe('WorkBuddy settings page', () => {
     )
   })
 
+  it('shows each product\'s model list with its promotions and context length', async () => {
+    byRoute[CN_CARD_VARIANT.statusPath] = {
+      ...signedIn([account()]),
+      models: [
+        { id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000_000, credits: 'x0.79', badges: ['限时免费'] },
+        { id: 'glm-5.1', name: 'GLM-5.1', contextWindow: 200_000, credits: 'x0.79' },
+      ],
+      catalog: { source: 'live', fetchedAt: Date.now() },
+    } as unknown as WorkBuddyWebStatus
+    await mount()
+    const rendered = text()
+    expect(rendered).toContain(t('modelsHeading'))
+    expect(rendered).toContain('GLM-5.3')
+    // The promotion rides the row beside the name: it is part of what the row
+    // is offering, not a separate section.
+    expect(rendered).toContain('限时免费')
+    expect(rendered).toContain(t('rate', { rate: 'x0.79' }))
+    expect(rendered).toContain('1M')
+  })
+
+  it('offers a context switch only where the model declares a choice', async () => {
+    byRoute[CN_CARD_VARIANT.statusPath] = {
+      ...signedIn([account()]),
+      models: [
+        // Two declared windows: a switch.
+        { id: 'gpt-5.6-sol', name: 'GPT-5.6-Sol', contextWindow: 1_000_000, contextChoices: [200_000, 1_000_000], contextChoice: 1_000_000 },
+        // One window: a fact, not a control.
+        { id: 'glm-5.1', name: 'GLM-5.1', contextWindow: 200_000 },
+      ],
+    } as unknown as WorkBuddyWebStatus
+    await mount()
+    const groups = [...document.querySelectorAll('[role="radiogroup"]')]
+    // Only the model with something to choose gets a radiogroup.
+    expect(groups).toHaveLength(1)
+    expect(groups[0]?.getAttribute('aria-label')).toContain('GPT-5.6-Sol')
+    const radios = [...(groups[0]?.querySelectorAll('[role="radio"]') ?? [])]
+    expect(radios.map(node => (node.textContent ?? '').trim())).toEqual(['200K', '1M'])
+    expect(radios[1]?.getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('posts the chosen context length for the right product', async () => {
+    byRoute[AI_CARD_VARIANT.statusPath] = {
+      ...signedIn([account({ id: 'ai:ent', name: '国际账号' })], 'ai-key'),
+      models: [
+        { id: 'gpt-5.6-luna', name: 'GPT-5.6-Luna', contextWindow: 1_000_000, contextChoices: [300_000, 1_000_000], contextChoice: 1_000_000 },
+      ],
+    } as unknown as WorkBuddyWebStatus
+    await mount()
+    const radios = [...document.querySelectorAll('[role="radio"]')]
+    await act(async () => { (radios[0] as HTMLElement | undefined)?.click(); await Promise.resolve() })
+    const call = posted().find(entry => entry.body['action'] === 'context')
+    expect(call).toBeDefined()
+    // The international model's choice must reach the international route, with
+    // the length that was clicked.
+    expect(call?.url).toBe(AI_CARD_VARIANT.accountPath)
+    expect(call?.body['model']).toBe('gpt-5.6-luna')
+    expect(call?.body['length']).toBe(300_000)
+  })
+
+  it('refreshes the model list through the probe route', async () => {
+    await mount()
+    const refresh = buttons().find(button => button.label === t('modelsRefresh'))
+    expect(refresh).toBeDefined()
+    await act(async () => { refresh?.node.click(); await Promise.resolve() })
+    const call = posted().find(entry => entry.body['action'] === 'refresh')
+    expect(call).toBeDefined()
+    // A catalog fetch is what the probe route already does; the account route
+    // owns the pool.
+    expect(call?.url).toBe(CN_CARD_VARIANT.probePath)
+  })
+
   it('surfaces a refusal from the host instead of failing silently', async () => {
     request.mockImplementation(async (url: string, init?: RequestInit) => {
       if (init?.method === 'POST') {
