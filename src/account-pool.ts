@@ -147,6 +147,18 @@ const COOLDOWN_CAP_MS: Readonly<Record<WorkBuddyCooldownReason, number>> = {
   session: 24 * 60 * 60_000,
 }
 
+/**
+ * Longest an *upstream-stated* wait is honoured.
+ *
+ * Deliberately not {@link COOLDOWN_CAP_MS}: those caps bound this plugin's own
+ * backoff schedule, which is a guess and should stay modest. A time the upstream
+ * stated is not a guess — a frequency-limit reset is routinely hours away, and
+ * clamping it to the rate schedule's fifteen minutes meant retrying into the
+ * same refusal for as long as the limit lasted. This bound exists only so a
+ * mistyped date cannot bench an account indefinitely.
+ */
+const COOLDOWN_HINT_CAP_MS = 7 * 24 * 60 * 60_000
+
 /** The backoff an account earns after `strikes` consecutive failures. */
 export function cooldownDurationMs(reason: WorkBuddyCooldownReason, strikes: number): number {
   const exponent = Math.max(0, Math.min(strikes - 1, 16))
@@ -454,14 +466,16 @@ export class WorkBuddyAccountPool {
    * @param retryAfterMs - upstream's own `Retry-After`, which wins over the
    *   schedule: the provider knows its window better than any backoff we pick.
    */
-  cooldown(id: string, reason: WorkBuddyCooldownReason, retryAfterMs?: number): WorkBuddyCooldown | undefined {
+  cooldown(id: string, reason: WorkBuddyCooldownReason, hintMs?: number): WorkBuddyCooldown | undefined {
     const now = Date.now()
     let result: WorkBuddyCooldown | undefined
     void this.mutate(id, current => {
       const active = current.cooldown !== undefined && current.cooldown.untilMs > now
       const strikes = active ? (current.cooldown as WorkBuddyCooldown).strikes + 1 : 1
-      const duration = retryAfterMs !== undefined && retryAfterMs > 0
-        ? Math.min(Math.max(retryAfterMs, 1_000), COOLDOWN_CAP_MS[reason])
+      // An upstream-stated wait is honoured on its own terms; the backoff
+      // schedule's per-reason cap applies only to the schedule.
+      const duration = hintMs !== undefined && hintMs > 0
+        ? Math.min(Math.max(hintMs, 1_000), COOLDOWN_HINT_CAP_MS)
         : cooldownDurationMs(reason, strikes)
       const cooldown: WorkBuddyCooldown = { untilMs: now + duration, reason, strikes, atMs: now }
       result = cooldown

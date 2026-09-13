@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { CSSProperties } from 'react'
+import { describeWait } from '../status-paths.ts'
 import type { WorkBuddyWebAccounts, WorkBuddyWebStatus } from '../status-paths.ts'
 import { CARD_VARIANTS } from './card-variants.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
@@ -84,6 +85,17 @@ const valueStyle: CSSProperties = { flex: '0 0 auto', fontVariantNumeric: 'tabul
 const waitingStyle: CSSProperties = { ...valueStyle, color: 'var(--dsw-alias-state-warning-primary, #b45309)' }
 const collapsedStyle: CSSProperties = { ...panelStyle, width: 'auto', maxHeight: 'none', padding: '6px 10px' }
 
+/**
+ * A cooldown's remaining time, worded for the reader.
+ *
+ * `describeWait` decides the unit — shared with the settings page so the two
+ * surfaces cannot describe one account differently — and the words are local.
+ */
+function waitWords(untilMs: number, now: number, t: Translate): string {
+  const wait = describeWait(untilMs, now)
+  return t(wait.unit === 'hour' ? 'waitHours' : 'waitMinutes', { value: wait.value })
+}
+
 function statusColor(status: WorkBuddyWebStatus['status'] | undefined): string {
   if (status === 'signed-in') return 'var(--dsw-alias-state-success-primary, #22a06b)'
   if (status === 'error') return 'var(--dsw-alias-state-error-primary, #d92d20)'
@@ -134,7 +146,7 @@ function AccountLine({ account, now, t }: {
       {waiting
         // A limited account shows when it comes back, not a balance: the
         // balance of an account that cannot be used yet is not actionable.
-        ? <span style={waitingStyle}>{t('floatingRetryIn', { minutes: Math.max(1, Math.ceil(((cooldown?.untilMs ?? 0) - now) / 60_000)) })}</span>
+        ? <span style={waitingStyle}>{t('floatingRetryIn', { when: waitWords(cooldown?.untilMs ?? 0, now, t) })}</span>
         : <span style={valueStyle}>
             {account.credits === undefined
               ? '—'

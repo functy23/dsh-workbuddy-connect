@@ -154,7 +154,7 @@ describe('WorkBuddy floating account window', () => {
       },
     }))
     const text = window_()?.textContent ?? ''
-    expect(text).toContain(t('floatingRetryIn', { minutes: 7 }))
+    expect(text).toContain(t('floatingRetryIn', { when: t('waitMinutes', { value: 7 }) }))
     // The balance of an account that cannot serve yet is not what the reader
     // needs, so it is replaced rather than shown beside the wait.
     expect(text).not.toContain('500')

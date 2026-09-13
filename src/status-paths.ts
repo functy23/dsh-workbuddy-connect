@@ -1,5 +1,26 @@
 /** Node-free constants and types shared by the Host and browser halves. */
 
+/**
+ * How long a benched account stays benched, in the unit that reads best.
+ *
+ * Shared rather than written on each side because both halves describe the same
+ * field of the same document, and the CLI and the settings page disagreeing
+ * about how long a cooldown has left would read as one of them being wrong. The
+ * *wording* stays local, because only each side knows its language.
+ *
+ * The hour unit exists because an upstream-stated reset can be most of a day
+ * away, and "1078 分钟" is a number nobody converts in their head.
+ */
+export function describeWait(
+  untilMs: number,
+  now: number,
+): { unit: 'minute' | 'hour', value: number } {
+  const minutes = Math.max(1, Math.ceil(Math.max(0, untilMs - now) / 60_000))
+  return minutes < 60
+    ? { unit: 'minute', value: minutes }
+    : { unit: 'hour', value: Math.ceil(minutes / 60) }
+}
+
 /** Plugin-owned status endpoint consumed by its browser half. */
 export const WORKBUDDY_STATUS_PATH = '/plugins/dsh-workbuddy-connect/status'
 

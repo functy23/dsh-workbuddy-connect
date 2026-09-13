@@ -147,12 +147,36 @@ describe('WorkBuddy settings page', () => {
     expect(document.body.textContent ?? '').toContain('—')
   })
 
+  /**
+   * A bench is described by when the account returns, not by its balance: the
+   * balance of an account that cannot serve yet is not actionable.
+   */
   it('shows a limited account by when it returns, not by its balance', async () => {
     byRoute[CN_CARD_VARIANT.statusPath] = signedIn([
       account({ available: false, cooldown: { untilMs: Date.now() + 7 * 60_000, reason: 'rate', strikes: 1 } }),
     ])
     await mount()
-    expect(text()).toContain(t('accountStateWaiting', { reason: t('accountStateLimited'), minutes: 7 }))
+    // Composed the way the page composes it: the unit is chosen by
+    // `describeWait`, the wording is local.
+    expect(text()).toContain(t('accountStateWaiting', {
+      reason: t('accountStateLimited'),
+      when: t('waitMinutes', { value: 7 }),
+    }))
+  })
+
+  /**
+   * An upstream-stated reset can be most of a day away, so the countdown has to
+   * change unit rather than report "1078 分钟".
+   */
+  it('states a long bench in hours', async () => {
+    byRoute[CN_CARD_VARIANT.statusPath] = signedIn([
+      account({ available: false, cooldown: { untilMs: Date.now() + 18 * 3_600_000, reason: 'rate', strikes: 1 } }),
+    ])
+    await mount()
+    expect(text()).toContain(t('accountStateWaiting', {
+      reason: t('accountStateLimited'),
+      when: t('waitHours', { value: 18 }),
+    }))
   })
 
   it('reports an expired pasted token, which cannot renew itself', async () => {

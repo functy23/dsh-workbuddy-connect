@@ -9,16 +9,22 @@
  * @module dsh-workbuddy-connect/account-cli
  */
 
+import { describeWait } from './status-paths.ts'
 import type { WorkBuddyAccountPool } from './account-pool.ts'
 import type { WorkBuddyAccountService } from './account-service.ts'
 import type { WorkBuddyVariant } from './variants.ts'
 
-/** One row of the human-readable listing. */
+/**
+ * One row of the human-readable listing.
+ *
+ * The unit comes from {@link describeWait} so the CLI and the settings page
+ * describe the same cooldown the same way; only the wording is local.
+ */
 function describeCooldown(untilMs: number, reason: string, now: number): string {
-  const remaining = Math.max(0, untilMs - now)
-  const minutes = Math.ceil(remaining / 60_000)
+  const wait = describeWait(untilMs, now)
   const label = reason === 'credit' ? '额度耗尽' : reason === 'session' ? '会话失效' : '限流'
-  return `${label}，${minutes} 分钟后重试`
+  const when = wait.unit === 'hour' ? `${String(wait.value)} 小时` : `${String(wait.value)} 分钟`
+  return `${label}，${when}后重试`
 }
 
 /** Render the pool as one text block per account. */

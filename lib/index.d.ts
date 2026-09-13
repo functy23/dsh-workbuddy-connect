@@ -1086,7 +1086,7 @@ declare class WorkBuddyAccountPool {
    * @param retryAfterMs - upstream's own `Retry-After`, which wins over the
    *   schedule: the provider knows its window better than any backoff we pick.
    */
-  cooldown(id: string, reason: WorkBuddyCooldownReason, retryAfterMs?: number): WorkBuddyCooldown | undefined;
+  cooldown(id: string, reason: WorkBuddyCooldownReason, hintMs?: number): WorkBuddyCooldown | undefined;
   /** Clear a benching after a success. */
   clearCooldown(id: string): void;
   /** Mark an account's session as permanently dead. */
@@ -1572,7 +1572,18 @@ declare class WorkBuddyRotation {
    *   whole rotation rather than moving on to another account.
    */
   send(body: string, signal?: AbortSignal): Promise<WorkBuddyRotationOutcome>;
-  /** Apply the cooldown a failure earns, with the upstream's own hint when given. */
+  /**
+   * Apply the cooldown a failure earns, preferring whatever the upstream said
+   * about when the account comes back.
+   *
+   * Two hints can be present and they answer different questions. The body's
+   * stated reset is about *this account's allowance* — when the frequency limit
+   * lifts — and is what the user needs to see. `Retry-After` is the endpoint
+   * saying "not right now", which may be about load rather than the allowance.
+   * The specific answer wins.
+   *
+   * With neither, the pool's own backoff applies.
+   */
   private bench;
   /**
    * Refresh one account's access token, persisting the result.

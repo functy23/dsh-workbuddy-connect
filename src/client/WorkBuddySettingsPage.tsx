@@ -24,6 +24,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { CSSProperties } from 'react'
+import { describeWait } from '../status-paths.ts'
 import type {
   WorkBuddyAccountAction,
   WorkBuddyAccountResult,
@@ -337,7 +338,7 @@ function AccountRow({ account, product, busy, now, t, onAction }: {
           {waiting
             ? t('accountStateWaiting', {
                 reason: t(cooldown?.reason === 'credit' ? 'accountStateExhausted' : cooldown?.reason === 'session' ? 'accountStateSessionDead' : 'accountStateLimited'),
-                minutes: Math.max(1, Math.ceil(((cooldown?.untilMs ?? 0) - now) / 60_000)),
+                when: waitLabel(cooldown?.untilMs ?? 0, now, t),
               })
             : expired
               ? t('accountExpired')
@@ -386,6 +387,17 @@ function promotionChips(model: WorkBuddyWebModelBadge, freeLabel: string): strin
     ...badges,
     ...model.free === true && !alreadySaysFree ? [freeLabel] : [],
   ]
+}
+
+/**
+ * A cooldown's remaining time, worded for the reader.
+ *
+ * The unit decision is shared (`describeWait`); only the words are local, which
+ * is why this composes them here rather than inside the document contract.
+ */
+function waitLabel(untilMs: number, now: number, t: Translate): string {
+  const wait = describeWait(untilMs, now)
+  return t(wait.unit === 'hour' ? 'waitHours' : 'waitMinutes', { value: wait.value })
 }
 
 /** A token count as the switch's label: 1M reads better than 1000000. */

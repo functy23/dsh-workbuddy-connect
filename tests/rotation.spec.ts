@@ -8,7 +8,7 @@ import {
   credentialOf,
   WorkBuddyAccountPool,
 } from '../src/account-pool.ts'
-import { WorkBuddyRotation, isAccountScoped, parseRetryAfter } from '../src/rotation.ts'
+import { WorkBuddyRotation, isAccountScoped, parseResetTimeHint, parseRetryAfter } from '../src/rotation.ts'
 import { CN_VARIANT } from '../src/variants.ts'
 import type { WorkBuddyChatResult, WorkBuddyRefreshOutcome } from '../src/upstream.ts'
 import type { WorkBuddyCredential } from '../src/auth.ts'
@@ -73,10 +73,20 @@ function recorder(answer: (uid: string, attempt: number) => WorkBuddyChatResult)
 }
 
 const ok = (): WorkBuddyChatResult => ({ ok: true, response: new Response('data: [DONE]\n\n', { status: 200 }) })
-const rate = (retryAfter?: string): WorkBuddyChatResult => ({
-  ok: false, status: 429, kind: 'soft_rate', message: 'rate limited',
+const rate = (retryAfter?: string, message = 'rate limited'): WorkBuddyChatResult => ({
+  ok: false, status: 429, kind: 'soft_rate', message,
   ...retryAfter === undefined ? {} : { retryAfter },
 })
+
+/**
+ * The two products' real 429 bodies, copied from live responses.
+ *
+ * Both state when the allowance returns, in the body rather than in a header —
+ * which is the whole reason the plugin could not previously do better than its
+ * own backoff.
+ */
+const RATE_LIMIT_EN = '{"code":6004,"msg":"usage exceeds frequency limit, but don\'t worry, your usage will reset at 2026-09-13 21:50:51 UTC+8, alternatively, you can switch to the other models to continue using it.","requestId":"5ed1453d"}'
+const RATE_LIMIT_CN = '{"code":6004,"msg":"您的使用量已超出频率限制，将在 2026-09-14 11:57:16 UTC+8 重置，您也可以切换其他模型继续使用。","requestId":"f34605c2"}'
 const credit = (): WorkBuddyChatResult => ({ ok: false, status: 402, kind: 'hard_credit', message: 'no credit' })
 const dead = (): WorkBuddyChatResult => ({ ok: false, status: 401, kind: 'session_dead', message: 'session dead' })
 const badRequest = (): WorkBuddyChatResult => ({ ok: false, status: 400, kind: 'client', message: 'bad model' })
@@ -132,6 +142,33 @@ describe('rotation on a limited account', () => {
     await rotation.send('{}')
     expect(seen).toEqual(['uid-b'])
     expect(pool.get(a)?.cooldown).toBeDefined()
+  })
+
+  /**
+   * The end the user actually sees: a 429 that names its reset benches the
+   * account until then, not for the schedule's fifteen-minute ceiling.
+   *
+   * Only `Date` is faked, so the promises rotation chains still settle on real
+   * timers.
+   */
+  it('benches a rate-limited account until the reset the body states', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date(Date.UTC(2026, 8, 13, 10, 0, 0)) })
+    try {
+      const pool = await makePool()
+      const a = add(pool, 'uid-a')
+      add(pool, 'uid-b')
+      const { client } = recorder(uid => uid === 'uid-a' ? rate(undefined, RATE_LIMIT_CN) : ok())
+      const rotation = new WorkBuddyRotation({ pool, client })
+      await rotation.send('{}')
+      const cooldown = pool.get(a)?.cooldown
+      expect(cooldown?.reason).toBe('rate')
+      // 17h57m16s, not the 60s the backoff schedule would have chosen and not
+      // the 15-minute cap it would have clamped it to.
+      const expected = 17 * 3600_000 + 57 * 60_000 + 16_000
+      expect((cooldown?.untilMs ?? 0) - Date.now()).toBe(expected)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('honours the upstream Retry-After over its own backoff', async () => {
@@ -267,6 +304,49 @@ describe('rotation helpers', () => {
     expect(isAccountScoped('client')).toBe(false)
     expect(isAccountScoped('server')).toBe(false)
     expect(isAccountScoped('not_found')).toBe(false)
+  })
+
+  /**
+   * The stated reset is the whole point: a frequency limit names the moment the
+   * allowance returns, and a backoff this plugin invents is at best a guess
+   * about a schedule the server already knows.
+   */
+  it('reads the reset time out of both products\' 429 bodies', () => {
+    const now = Date.UTC(2026, 8, 13, 10, 0, 0)   // 18:00 in UTC+8
+    // 2026-09-13 21:50:51 UTC+8 is 3h50m51s after 18:00 UTC+8.
+    expect(parseResetTimeHint(RATE_LIMIT_EN, now)).toBe(3 * 3600_000 + 50 * 60_000 + 51_000)
+    // 2026-09-14 11:57:16 UTC+8 is 17h57m16s after 18:00 UTC+8.
+    expect(parseResetTimeHint(RATE_LIMIT_CN, now)).toBe(17 * 3600_000 + 57 * 60_000 + 16_000)
+  })
+
+  it('refuses a reset it cannot place on the clock', () => {
+    const now = Date.UTC(2026, 8, 13, 10, 0, 0)
+    // No time at all.
+    expect(parseResetTimeHint('usage exceeds frequency limit', now)).toBeUndefined()
+    // A wall clock with no offset would have to be *assumed* to be in some zone,
+    // and a wrong assumption is wrong by hours exactly when it matters.
+    expect(parseResetTimeHint('reset at 2026-09-13 21:50:51', now)).toBeUndefined()
+    // Already past: the allowance is back, so the caller's short backoff is the
+    // right answer rather than a negative wait.
+    expect(parseResetTimeHint('reset at 2026-09-13 09:00:00 UTC+8', now)).toBeUndefined()
+    // Nonsense calendar fields are rejected rather than rolled over by Date.UTC.
+    expect(parseResetTimeHint('reset at 2026-13-13 21:50:51 UTC+8', now)).toBeUndefined()
+    expect(parseResetTimeHint('reset at 2026-09-32 21:50:51 UTC+8', now)).toBeUndefined()
+  })
+
+  it('handles the offsets and separators a reset could plausibly use', () => {
+    const now = Date.UTC(2026, 8, 13, 10, 0, 0)
+    // Bare UTC means UTC.
+    expect(parseResetTimeHint('reset at 2026-09-13 13:50:51 UTC', now)).toBe(3 * 3600_000 + 50 * 60_000 + 51_000)
+    // A negative offset moves the other way.
+    expect(parseResetTimeHint('reset at 2026-09-13 09:50:51 UTC-5', now)).toBe(4 * 3600_000 + 50 * 60_000 + 51_000)
+    // Half-hour zones are real.
+    expect(parseResetTimeHint('reset at 2026-09-13 16:00:00 UTC+05:30', now)).toBe(30 * 60_000)
+    // ISO's T separator.
+    expect(parseResetTimeHint('reset at 2026-09-13T13:00:00 UTC', now)).toBe(3 * 3600_000)
+    // A date absurdly far out is bounded, so a mistyped year cannot bench an
+    // account indefinitely.
+    expect(parseResetTimeHint('reset at 2026-12-31 23:59:59 UTC+8', now)).toBe(7 * 24 * 3600_000)
   })
 
   it('parses Retry-After in both of its forms and refuses nonsense', () => {

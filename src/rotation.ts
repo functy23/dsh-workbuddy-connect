@@ -81,6 +81,71 @@ export function parseRetryAfter(value: string | null | undefined, now = Date.now
   return delta > 0 ? delta : undefined
 }
 
+/**
+ * A stated reset time, as both products word it.
+ *
+ *   …your usage will reset at 2026-09-13 21:50:51 UTC+8, alternatively…
+ *   …将在 2026-09-14 11:57:16 UTC+8 重置，…
+ *
+ * The offset is a required part of the match. Both products write `UTC+8`, and a
+ * bare wall-clock time would have to be *assumed* to be in some zone — an
+ * assumption that is wrong by hours precisely in the case this exists for. No
+ * offset, no hint: the caller falls back to its own schedule.
+ */
+const RESET_TIME_HINT = /(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})\s*(?:UTC|GMT)(?:\s*([+-])\s*(\d{1,2})(?::?(\d{2}))?)?/u
+
+/**
+ * Longest a stated reset is trusted for.
+ *
+ * A safeguard, not a policy: the value comes from a server and is far more
+ * authoritative than any backoff this plugin could invent, so it is used as
+ * given. This ceiling only bounds what a mistyped or misparsed date could do —
+ * a week is already past every allowance window either product runs, so a real
+ * reset can never be cut short by it.
+ */
+const RESET_HINT_CEILING_MS = 7 * 24 * 60 * 60_000
+
+/**
+ * The reset time an upstream limit message states, as a wait from now.
+ *
+ * A frequency limit answers 429 with the moment the allowance returns, in the
+ * *body's* words rather than in a header — so without reading it the plugin has
+ * nothing to go on but its own backoff, which starts at a minute and never
+ * exceeds fifteen. That is far shorter than the hours these allowances actually
+ * take to roll over, so the account would be retried again and again into the
+ * same refusal, and the user would be told to wait a minute for something that
+ * needs the rest of the day.
+ *
+ * Returns undefined when the message states no usable time, leaving the caller's
+ * schedule in charge.
+ */
+export function parseResetTimeHint(message: string, now = Date.now()): number | undefined {
+  const match = RESET_TIME_HINT.exec(message)
+  if (match === null) return undefined
+  const [, year, month, day, hour, minute, second, sign, offsetHours, offsetMinutes] = match
+  // Range-check the calendar fields rather than trusting Date.UTC, which
+  // normalises overflow: month 13 and day 32 would roll into a neighbouring
+  // date instead of being rejected as the nonsense they are.
+  if (Number(month) < 1 || Number(month) > 12) return undefined
+  if (Number(day) < 1 || Number(day) > 31) return undefined
+  if (Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) return undefined
+  const wallClock = Date.UTC(
+    Number(year), Number(month) - 1, Number(day),
+    Number(hour), Number(minute), Number(second),
+  )
+  if (!Number.isFinite(wallClock)) return undefined
+  // `UTC` with no offset means UTC, which `Date.UTC` above already produced.
+  const offset = sign === undefined
+    ? 0
+    : (sign === '-' ? -1 : 1) * (Number(offsetHours) * 60 + Number(offsetMinutes ?? 0))
+  const at = wallClock - offset * 60_000
+  const wait = at - now
+  // A reset in the past means the allowance is already back; the caller's own —
+  // short — schedule is the right response to that, not a negative wait.
+  if (wait <= 0) return undefined
+  return Math.min(wait, RESET_HINT_CEILING_MS)
+}
+
 /** Which cooldown class an upstream failure earns. */
 export function cooldownReasonFor(kind: UpstreamErrorKind): WorkBuddyCooldownReason | undefined {
   if (kind === 'soft_rate') return 'rate'
@@ -215,12 +280,23 @@ export class WorkBuddyRotation {
     return { result: lastResult, attempts, ...lastAccount === undefined ? {} : { account: lastAccount }, exhausted: true }
   }
 
-  /** Apply the cooldown a failure earns, with the upstream's own hint when given. */
+  /**
+   * Apply the cooldown a failure earns, preferring whatever the upstream said
+   * about when the account comes back.
+   *
+   * Two hints can be present and they answer different questions. The body's
+   * stated reset is about *this account's allowance* — when the frequency limit
+   * lifts — and is what the user needs to see. `Retry-After` is the endpoint
+   * saying "not right now", which may be about load rather than the allowance.
+   * The specific answer wins.
+   *
+   * With neither, the pool's own backoff applies.
+   */
   private bench(account: WorkBuddyAccount, result: Extract<WorkBuddyChatResult, { ok: false }>): void {
     const reason = cooldownReasonFor(result.kind)
     if (reason === undefined) return
-    const retryAfter = parseRetryAfter(result.retryAfter)
-    this.pool.cooldown(account.id, reason, retryAfter)
+    const hint = parseResetTimeHint(result.message) ?? parseRetryAfter(result.retryAfter)
+    this.pool.cooldown(account.id, reason, hint)
   }
 
   /**

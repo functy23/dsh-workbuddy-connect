@@ -27,7 +27,7 @@ Both the CN **WorkBuddy** and the international **WorkBuddy AI** apps are suppor
 
 - **Multi-account rotation (since v0.6.0)**: each version can hold several accounts at once, and requests rotate between them automatically. When an account is rate limited (429), out of quota (402), or has an expired sign-in (401), the request is **retried on another account in the pool**, so the conversation does not break. Each healthy account is tried at most once per request — never an unbounded retry loop.
 
-  A limited account is set aside and the card shows "rate limited · retry in N min"; an out-of-quota account is set aside much longer (one hour, doubling on each consecutive failure, capped at 24 hours) and recovers on its own. When the upstream sends `Retry-After`, that value wins.
+  A limited account is set aside, and the card says when it returns — in hours when that is the honest unit. **That time comes from the upstream**, which states the moment the allowance resets in its 429 body (for example "your usage will reset at 2026-09-13 21:50:51 UTC+8"). A schedule the server already knows beats one this plugin would invent, and the plugin's own backoff (a minute, doubling, capped at fifteen for a rate limit; an hour, capped at a day, for exhausted quota) applies only when the upstream says nothing.
 
   Accounts come from two places: **the desktop app's sign-in is captured automatically**, and you can **add more by QR** from the card (scan with the phone app; the sign-in joins the plugin only and does not touch the desktop app).
 
@@ -47,7 +47,7 @@ not interchangeable.
 - Each row shows the **account name, remaining credit**, and a **Test** and **Remove** button.
 - The **Add account** button asks which product first, then opens that product's sign-in dialog.
 - The block ends with the **per-product totals**, side by side and never added together.
-- A rate-limited or out-of-quota account replaces its balance with "rate limited · retry in N min"; an account added by a pasted token shows "sign-in expired" once its token lapses.
+- A rate-limited or out-of-quota account replaces its balance with when it returns ("rate limited · retry in 3 h"); an account added by a pasted token shows "sign-in expired" once its token lapses.
 
 The **models** below stay per product, each with its own grey heading, a refresh
 button and the list's provenance (live / saved / built-in). Each row shows the model
