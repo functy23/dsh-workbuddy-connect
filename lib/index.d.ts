@@ -258,7 +258,18 @@ type WorkBuddyChatResult = {
  * @returns the bare multiplier, or undefined when nothing displayable remains.
  */
 declare function normalizeCredits(credits: string | undefined): string | undefined;
-/** Classify an upstream failure from its HTTP status and body excerpt. */
+/**
+ * Classify an upstream failure from its HTTP status and body excerpt.
+ *
+ * The status code is authoritative and the body markers refine it, not the
+ * other way round. That ordering matters for 401: the gateway in front of the
+ * upstream answers an expired or unknown bearer with an **HTML** error page
+ * (`openresty`'s "401 Authorization Required"), which carries none of the
+ * session markers and parses as no envelope at all. Reading the body first
+ * classified the one failure rotation exists for — "this account's sign-in is
+ * no longer good" — as a malformed request, which is the class that deliberately
+ * does *not* switch accounts.
+ */
 declare function classifyUpstreamError(status: number, body: string): UpstreamErrorKind;
 /** Region for a login domain; an empty domain means CN (matching upstream tooling). */
 declare function regionOf(domain: string): WorkBuddyRegion;

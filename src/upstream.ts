@@ -251,7 +251,18 @@ function resolveUpstreamBilling(wrapped: Record<string, unknown>): { billing: Wo
 /** Session-invalidation markers that mean "sign in again in the WorkBuddy app". */
 const SESSION_DEAD_MARKERS: readonly string[] = ['Offline user session not found', '12153']
 
-/** Classify an upstream failure from its HTTP status and body excerpt. */
+/**
+ * Classify an upstream failure from its HTTP status and body excerpt.
+ *
+ * The status code is authoritative and the body markers refine it, not the
+ * other way round. That ordering matters for 401: the gateway in front of the
+ * upstream answers an expired or unknown bearer with an **HTML** error page
+ * (`openresty`'s "401 Authorization Required"), which carries none of the
+ * session markers and parses as no envelope at all. Reading the body first
+ * classified the one failure rotation exists for — "this account's sign-in is
+ * no longer good" — as a malformed request, which is the class that deliberately
+ * does *not* switch accounts.
+ */
 export function classifyUpstreamError(status: number, body: string): UpstreamErrorKind {
   if (status === 402) return 'hard_credit'
   const lower = body.toLowerCase()
@@ -261,6 +272,9 @@ export function classifyUpstreamError(status: number, body: string): UpstreamErr
   for (const marker of SESSION_DEAD_MARKERS) {
     if (body.includes(marker)) return 'session_dead'
   }
+  // A 401 is account-scoped whatever its body says: the credential presented was
+  // refused, and another account's credential is a different question.
+  if (status === 401) return 'session_dead'
   if (status === 429) return 'soft_rate'
   if (status === 404) return 'not_found'
   if (status >= 500) return 'server'

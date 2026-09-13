@@ -74,6 +74,28 @@ describe('classifyUpstreamError', () => {
     expect(classifyUpstreamError(401, 'Offline user session not found')).toBe('session_dead')
   })
 
+  /**
+   * The status code is what decides, because the marker is often absent.
+   *
+   * A real expired bearer does not come back as a JSON envelope at all: the
+   * gateway in front of the upstream answers with an HTML error page
+   * (`openresty`'s "401 Authorization Required"), which contains none of the
+   * session markers. Reading the body first classified exactly the failure
+   * rotation exists for as a malformed request — the one class that
+   * deliberately does not switch accounts — so this case is pinned twice: with
+   * a bare body, and with the HTML the gateway actually sends.
+   */
+  it('classifies a bare 401 as session dead even when the body says nothing', () => {
+    expect(classifyUpstreamError(401, '')).toBe('session_dead')
+    expect(classifyUpstreamError(401, '{"code":-1,"msg":"unauthorized"}')).toBe('session_dead')
+  })
+
+  it('classifies the gateway\'s HTML 401 as session dead', () => {
+    const html = '<html><head><title>401 Authorization Required</title></head>'
+      + '<body><center><h1>401 Authorization Required</h1></center><hr><center>openresty</center></body></html>'
+    expect(classifyUpstreamError(401, html)).toBe('session_dead')
+  })
+
   it('classifies 429 as soft rate', () => {
     expect(classifyUpstreamError(429, 'slow down')).toBe('soft_rate')
   })
