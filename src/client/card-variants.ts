@@ -34,14 +34,6 @@ export interface WorkBuddyCardVariant {
   probePath: string
   /** Write endpoint that manages this variant's account pool. */
   accountPath: string
-  /**
-   * The web console a user signs into to obtain a pasted token.
-   *
-   * Not the API host: the CN console is `www.workbuddy.cn` while its API is
-   * `copilot.tencent.com`, so pointing the sign-in button at the API host would
-   * open a page with nothing to sign into.
-   */
-  consoleUrl: string
 }
 
 /** CN WorkBuddy; the plugin's long-standing product and default. */
@@ -53,7 +45,6 @@ export const CN_CARD_VARIANT: WorkBuddyCardVariant = {
   statusPath: WORKBUDDY_STATUS_PATH,
   probePath: WORKBUDDY_PROBE_PATH,
   accountPath: WORKBUDDY_ACCOUNT_PATH,
-  consoleUrl: 'https://www.workbuddy.cn/',
 }
 
 /** International WorkBuddy AI. */
@@ -65,7 +56,6 @@ export const AI_CARD_VARIANT: WorkBuddyCardVariant = {
   statusPath: WORKBUDDY_AI_STATUS_PATH,
   probePath: WORKBUDDY_AI_PROBE_PATH,
   accountPath: WORKBUDDY_AI_ACCOUNT_PATH,
-  consoleUrl: 'https://www.workbuddy.ai/',
 }
 
 /** Both products, in display order. */

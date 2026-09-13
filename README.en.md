@@ -66,7 +66,7 @@ single declared window gets no switch, because there is nothing to choose.
 
 > **The international product shows no QR entry**: no mobile service completes its QR flow, so its routes are **Sign in on the web** (opens its console) and the pasted token.
 >
-> The web route only completes the sign-in in the browser; the plugin cannot read the result, so copy the token afterwards and add it with the token tab.
+> The browser route opens that product's login page automatically and then waits: once the sign-in completes on the web, the account is added here on its own, with no token to copy.
 
 > **A pasted token cannot renew itself** (it carries no refresh token). When it expires, paste a fresh one; adding the same account again updates its token instead of creating a duplicate.
 

@@ -221,25 +221,83 @@ describe('WorkBuddy settings page', () => {
     // There is nothing on a phone that completes the international QR flow, so
     // offering a code would be offering a path that cannot be walked.
     expect(labels).not.toContain(t('accountLoginQr'))
-    // It does offer the console: the international token has to be obtained
-    // somewhere, and that page is where.
+    // It offers the browser route instead: the international token has to be
+    // obtained somewhere, and that page is where.
     expect(labels).toContain(t('accountLoginWeb'))
     expect(labels).toContain(t('accountLoginToken'))
-    expect(posted()).toHaveLength(0)
+    // The browser route mints its challenge on open, exactly as the code route
+    // does, so the login URL it opens is one the host is already polling.
+    const calls = posted()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.body['action']).toBe('add')
+    expect(calls[0]?.url).toBe(AI_CARD_VARIANT.accountPath)
   })
 
-  it('opens the international console from its web route', async () => {
+  /**
+   * The browser route must reach the product's *login* page, not its marketing
+   * site — and it must get there through the host, because the login URL is the
+   * `authUrl` the host mints alongside the state it is polling.
+   *
+   * This is the assertion that would have caught the earlier version of this
+   * route, which opened a hardcoded home page and therefore never actually
+   * signed anybody in.
+   */
+  it('mints a challenge and opens the minted login URL for the browser route', async () => {
+    const loginUrl = 'https://www.workbuddy.ai/login?platform=CLI&state=st-ai'
+    request.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ({
+            state: 'ok',
+            challenge: { state: 'st-ai', authUrl: loginUrl, expiresAtMs: Date.now() + 300_000 },
+          }),
+        }
+      }
+      return { ok: true, json: async () => byRoute[url] }
+    })
     await mount()
     await act(async () => { buttons().find(button => button.label === t('accountAdd'))?.node.click(); await Promise.resolve() })
-    await act(async () => { buttons().find(button => button.label === t('accountAddAi'))?.node.click(); await Promise.resolve() })
-    await act(async () => { buttons().find(button => button.label === t('accountOpenLink'))?.node.click() })
-    // The console host, not the API host: the API host serves nothing a user
-    // can sign into.
+    await act(async () => {
+      buttons().find(button => button.label === t('accountAddAi'))?.node.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    // The challenge is minted against the international route, exactly as the
+    // code route would.
+    expect(posted().some(call => call.url === AI_CARD_VARIANT.accountPath && call.body['action'] === 'add')).toBe(true)
+    // And the login page opens on its own, without a second click.
     expect(window.open).toHaveBeenCalledWith(
-      AI_CARD_VARIANT.consoleUrl,
+      loginUrl,
       '_blank',
       'noopener,noreferrer',
     )
+  })
+
+  it('shows the browser route waiting, so the user knows the tab is not the end of it', async () => {
+    request.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ({
+            state: 'ok',
+            challenge: { state: 'st-ai', authUrl: 'https://www.workbuddy.ai/login?state=st-ai', expiresAtMs: Date.now() + 300_000 },
+          }),
+        }
+      }
+      return { ok: true, json: async () => byRoute[url] }
+    })
+    await mount()
+    await act(async () => { buttons().find(button => button.label === t('accountAdd'))?.node.click(); await Promise.resolve() })
+    await act(async () => {
+      buttons().find(button => button.label === t('accountAddAi'))?.node.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    // The account lands on its own, so the dialog has to say it is waiting —
+    // otherwise the browser tab reads as the whole flow and the user never
+    // learns the plugin finished it for them.
+    expect(text()).toContain(t('accountWebWaiting', { seconds: 300 }))
   })
 
   it('submits a pasted token to the product whose dialog is open', async () => {

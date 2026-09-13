@@ -602,9 +602,16 @@ function AddAccountDialog({ variant, t, busy, error, onCancel, onSubmitQr, onPol
    */
   const asked = useRef(false)
 
-  // Mint the challenge as soon as the QR half is shown.
+  /**
+   * Mint a challenge as soon as a route that needs one is shown.
+   *
+   * Both routes do: the code route renders the URL as a QR, and the browser
+   * route opens it. That is what makes the browser route a real sign-in rather
+   * than a link to a marketing page — the `authUrl` the host mints *is* the
+   * product's login page, carrying the state the host is already polling.
+   */
   useEffect(() => {
-    if (mode !== 'qr' || asked.current) return
+    if ((mode !== 'qr' && mode !== 'web') || asked.current) return
     asked.current = true
     stopped.current = false
     void onSubmitQr().then(next => {
@@ -612,6 +619,21 @@ function AddAccountDialog({ variant, t, busy, error, onCancel, onSubmitQr, onPol
       setChallenge(next)
     })
   }, [mode, onSubmitQr])
+
+  /**
+   * Open the minted login page in the system browser, once.
+   *
+   * Automatic rather than behind a button: the user already chose "sign in on
+   * the web", so making them click again to reach the page that choice names
+   * would be asking the same question twice. A ref keeps a re-render from
+   * opening a second tab.
+   */
+  const opened = useRef(false)
+  useEffect(() => {
+    if (mode !== 'web' || challenge === undefined || opened.current) return
+    opened.current = true
+    window.open(challenge.authUrl, '_blank', 'noopener,noreferrer')
+  }, [mode, challenge])
 
   useEffect(() => {
     if (challenge === undefined) return
@@ -689,14 +711,23 @@ function AddAccountDialog({ variant, t, busy, error, onCancel, onSubmitQr, onPol
           : mode === 'web'
             ? <>
                 <p style={dialogBodyStyle}>{t('accountWebBody')}</p>
+                {/*
+                  * The same wait the code route shows, because it is the same
+                  * wait: the host is polling the state either way, so a sign-in
+                  * completed in the browser lands in the pool on its own.
+                  */}
+                {challenge === undefined
+                  ? <span style={metaStyle}>{t('loading')}</span>
+                  : <p style={dialogBodyStyle}>{t('accountWebWaiting', { seconds: Math.ceil(remaining / 1_000) })}</p>}
                 <div style={dialogActionsStyle}>
                   <button
                     type="button"
-                    style={primaryStyle}
-                    // The system browser, not an in-app window: the sign-in
-                    // happens on the provider's own page, where the user's
-                    // existing session and password manager already live.
-                    onClick={() => { window.open(variant.consoleUrl, '_blank', 'noopener,noreferrer') }}
+                    style={buttonStyle}
+                    disabled={challenge === undefined}
+                    // The tab usually opened on its own; this is the way back to
+                    // it when the browser blocked the pop-up or the user closed
+                    // it by accident.
+                    onClick={() => { if (challenge !== undefined) window.open(challenge.authUrl, '_blank', 'noopener,noreferrer') }}
                   >
                     {t('accountOpenLink')}
                   </button>
