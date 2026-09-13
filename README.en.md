@@ -36,14 +36,21 @@ Both the CN **WorkBuddy** and the international **WorkBuddy AI** apps are suppor
 
 Settings → **DSH-WorkBuddy** (its own entry in the settings navigation):
 
-The page is **one card** with a block per product, separated by a small grey heading:
+The page is **one card**, with the accounts above and the models below.
 
-- The heading's right edge holds **Add account**; below it is that product's account list, each row showing the **account name, remaining credit**, and a **Test** and **Remove** button.
-- Each block ends with that product's **total credit**. The two totals stay separate and are never added together — the credits are not convertible and the accounts are not interchangeable.
+The **accounts** block holds both products in a single list, each row carrying
+a small grey label under the name saying which product it belongs to
+(**WORKBUDDY** / **WORKBUDDY AI**) — the one fact that must not be guessed,
+since the two products’ credits are not convertible and their accounts are
+not interchangeable.
+
+- Each row shows the **account name, remaining credit**, and a **Test** and **Remove** button.
+- The **Add account** button asks which product first, then opens that product's sign-in dialog.
+- The block ends with the **per-product totals**, side by side and never added together.
 - A rate-limited or out-of-quota account replaces its balance with "rate limited · retry in N min"; an account added by a pasted token shows "sign-in expired" once its token lapses.
 
-Below the accounts is that product's **model list**, with a refresh button and
-the list's provenance (live / saved / built-in). Each row shows the model
+The **models** below stay per product, each with its own grey heading, a refresh
+button and the list's provenance (live / saved / built-in). Each row shows the model
 name, its promotion badges and rate, and its context window.
 
 **The context length is switchable**: when the upstream declares more than one
@@ -57,7 +64,9 @@ single declared window gets no switch, because there is nothing to choose.
 - **Scan to sign in** (CN only): a QR code to scan with the phone app, with an **Open sign-in page** button below it that opens the web sign-in in the **system browser**.
 - **Sign-in token**: paste the console's token (the `AccessToken` string starting with `eyJ`). The plugin reads the name, uid, and expiry out of it and stores it **on this machine only**.
 
-> **The international product offers the token route only**: no mobile service completes its QR flow, so no QR entry is shown.
+> **The international product shows no QR entry**: no mobile service completes its QR flow, so its routes are **Sign in on the web** (opens its console) and the pasted token.
+>
+> The web route only completes the sign-in in the browser; the plugin cannot read the result, so copy the token afterwards and add it with the token tab.
 
 > **A pasted token cannot renew itself** (it carries no refresh token). When it expires, paste a fresh one; adding the same account again updates its token instead of creating a duplicate.
 

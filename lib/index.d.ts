@@ -442,6 +442,17 @@ interface WorkBuddyVariant {
   appName: string;
   /** Which upstream region this variant's credentials must belong to. */
   region: WorkBuddyRegion;
+  /**
+   * The web console a user signs into to obtain a pasted token, and the target
+   * of the sign-in dialog's "open login page" button.
+   *
+   * Separate from {@link chatBase} on purpose: that is the API host the plugin
+   * sends requests to, while this is the human-facing page. They are different
+   * hosts in both products (the CN console is `www.workbuddy.cn` while its API
+   * is `copilot.tencent.com`), and pointing the button at the API host would
+   * open a page with nothing to sign into.
+   */
+  consoleUrl: string;
   /** Env var overriding the desktop auth-file location. */
   env: string;
   /** Basename of the desktop app's own auth file in the shared auth directory. */

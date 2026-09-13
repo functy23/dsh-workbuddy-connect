@@ -213,22 +213,41 @@ describe('WorkBuddy settings page', () => {
     expect(buttons().map(button => button.label)).toContain(t('accountLoginToken'))
   })
 
-  it('offers only the token route for the international product', async () => {
+  it('offers the web route, not a scannable code, for the international product', async () => {
     await mount()
     await act(async () => { buttons().find(button => button.label === t('accountAdd'))?.node.click(); await Promise.resolve() })
     await act(async () => { buttons().find(button => button.label === t('accountAddAi'))?.node.click(); await Promise.resolve() })
     const labels = buttons().map(button => button.label)
     // There is nothing on a phone that completes the international QR flow, so
-    // offering it would be offering a path that cannot be walked.
+    // offering a code would be offering a path that cannot be walked.
     expect(labels).not.toContain(t('accountLoginQr'))
-    expect(labels).toContain(t('accountSubmit'))
+    // It does offer the console: the international token has to be obtained
+    // somewhere, and that page is where.
+    expect(labels).toContain(t('accountLoginWeb'))
+    expect(labels).toContain(t('accountLoginToken'))
     expect(posted()).toHaveLength(0)
+  })
+
+  it('opens the international console from its web route', async () => {
+    await mount()
+    await act(async () => { buttons().find(button => button.label === t('accountAdd'))?.node.click(); await Promise.resolve() })
+    await act(async () => { buttons().find(button => button.label === t('accountAddAi'))?.node.click(); await Promise.resolve() })
+    await act(async () => { buttons().find(button => button.label === t('accountOpenLink'))?.node.click() })
+    // The console host, not the API host: the API host serves nothing a user
+    // can sign into.
+    expect(window.open).toHaveBeenCalledWith(
+      AI_CARD_VARIANT.consoleUrl,
+      '_blank',
+      'noopener,noreferrer',
+    )
   })
 
   it('submits a pasted token to the product whose dialog is open', async () => {
     await mount()
     await act(async () => { buttons().find(button => button.label === t('accountAdd'))?.node.click(); await Promise.resolve() })
-    await act(async () => { buttons().find(button => button.label === t('accountAddCn'))?.node.click(); await Promise.resolve() })
+    await act(async () => { buttons().find(button => button.label === t('accountAddAi'))?.node.click(); await Promise.resolve() })
+    // The international dialog opens on the web route, so the token half has to
+    // be selected before the field exists.
     await act(async () => { buttons().find(button => button.label === t('accountLoginToken'))?.node.click(); await Promise.resolve() })
 
     const area = document.querySelector('textarea')
@@ -248,7 +267,8 @@ describe('WorkBuddy settings page', () => {
     })
     const call = posted().find(entry => entry.body['action'] === 'add-cookie')
     expect(call).toBeDefined()
-    expect(call?.url).toBe(CN_CARD_VARIANT.accountPath)
+    // The international dialog's token must reach the international pool.
+    expect(call?.url).toBe(AI_CARD_VARIANT.accountPath)
     expect(call?.body['token']).toBe('eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.sig')
   })
 
@@ -347,6 +367,46 @@ describe('WorkBuddy settings page', () => {
     expect(call?.url).toBe(CN_CARD_VARIANT.probePath)
   })
 
+  it('lists both products\' accounts in one block, each labelled with its product', async () => {
+    await mount()
+    // The two pools are shown as one list, and this is the assertion that would
+    // fail if they were split back into two blocks: both account names must be
+    // siblings in the same container.
+    const rendered = text()
+    expect(rendered).toContain('主账号')
+    expect(rendered).toContain('国际账号')
+    // Each row states its product, in the upper case the label is rendered in.
+    const labels = [...document.querySelectorAll('*')]
+      .filter(node => node.children.length === 0)
+      .map(node => (node.textContent ?? '').trim())
+    expect(labels).toContain(t(CN_CARD_VARIANT.titleKey))
+    expect(labels).toContain(t(AI_CARD_VARIANT.titleKey))
+  })
+
+  it('keeps the two products\' totals separate', async () => {
+    await mount()
+    const leaves = [...document.querySelectorAll('*')]
+      .filter(node => node.children.length === 0)
+      .map(node => (node.textContent ?? '').trim())
+    // 1,000 for the CN account and 50 for the international one — reported
+    // side by side, never added.
+    expect(leaves).toContain('1,000')
+    expect(leaves).toContain('50')
+    expect(leaves).not.toContain('1,050')
+  })
+
+  it('routes each merged row\'s action to its own product', async () => {
+    await mount()
+    // The rows are interleaved by product now, so the second Test button is the
+    // international account's; its request must go to the international route.
+    const test = buttons().filter(button => button.label === t('accountTest'))
+    expect(test).toHaveLength(2)
+    await act(async () => { test[1]?.node.click(); await Promise.resolve() })
+    const call = posted().find(entry => entry.body['action'] === 'test')
+    expect(call?.url).toBe(AI_CARD_VARIANT.accountPath)
+    expect(call?.body['id']).toBe('ai:ent')
+  })
+
   it('surfaces a refusal from the host instead of failing silently', async () => {
     request.mockImplementation(async (url: string, init?: RequestInit) => {
       if (init?.method === 'POST') {
@@ -357,6 +417,9 @@ describe('WorkBuddy settings page', () => {
     await mount()
     await act(async () => { buttons().find(button => button.label === t('accountAdd'))?.node.click(); await Promise.resolve() })
     await act(async () => { buttons().find(button => button.label === t('accountAddAi'))?.node.click(); await Promise.resolve() })
+    // The international dialog opens on the web route; the token field lives
+    // behind the other segment.
+    await act(async () => { buttons().find(button => button.label === t('accountLoginToken'))?.node.click(); await Promise.resolve() })
     const area = document.querySelector('textarea')
     const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set
     await act(async () => {

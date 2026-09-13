@@ -100,6 +100,39 @@ const balanceStyle: CSSProperties = {
   whiteSpace: 'nowrap',
 }
 const metaStyle: CSSProperties = { fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-tertiary)' }
+/** Name over product label: a column so the name's ellipsis cannot clip it. */
+const nameColumnStyle: CSSProperties = { display: 'flex', flexDirection: 'column', minWidth: 0 }
+/**
+ * The product an account belongs to.
+ *
+ * Uppercased in CSS rather than in copy, so the label matches the product names
+ * the rest of the page uses while still reading as a quiet classification rather
+ * than a second title. Smaller and dimmer than the name it sits under.
+ */
+const productStyle: CSSProperties = {
+  fontSize: 11,
+  lineHeight: '15px',
+  letterSpacing: 0.4,
+  textTransform: 'uppercase',
+  color: 'var(--dsw-alias-label-dimmed, var(--dsw-alias-label-tertiary))',
+}
+/** The per-product totals, side by side under one label. */
+const totalsStyle: CSSProperties = { display: 'inline-flex', alignItems: 'baseline', gap: 16, flexWrap: 'wrap' }
+const totalPairStyle: CSSProperties = { display: 'inline-flex', alignItems: 'baseline', gap: 6 }
+const totalProductStyle: CSSProperties = {
+  fontSize: 11,
+  lineHeight: '16px',
+  letterSpacing: 0.4,
+  textTransform: 'uppercase',
+  color: 'var(--dsw-alias-label-tertiary)',
+}
+const totalProductValueStyle: CSSProperties = {
+  fontSize: 20,
+  lineHeight: '26px',
+  fontWeight: 600,
+  fontVariantNumeric: 'tabular-nums',
+  color: 'var(--dsw-alias-label-primary)',
+}
 /** A promotional or "free" chip beside a model name. */
 const badgeStyle: CSSProperties = {
   flex: '0 0 auto',
@@ -255,8 +288,10 @@ function statusColor(account: WorkBuddyWebAccount, now: number): string {
 }
 
 /** One account row: name, balance, and the two things you can do to it. */
-function AccountRow({ account, busy, now, t, onAction }: {
+function AccountRow({ account, product, busy, now, t, onAction }: {
   account: WorkBuddyWebAccount
+  /** Which product this account belongs to, shown under the name. */
+  product: string
   busy: boolean
   now: number
   t: Translate
@@ -271,7 +306,16 @@ function AccountRow({ account, busy, now, t, onAction }: {
     <div style={rowStyle}>
       <span style={rowMainStyle}>
         <span aria-hidden="true" style={{ ...dotStyle, background: statusColor(account, now) }} />
-        <span style={nameStyle} title={account.name}>{account.name}</span>
+        {/*
+          * Name over product. The product is the one thing about a row that must
+          * not be guessed — the two products' credits are not convertible and
+          * their accounts are not interchangeable — so it is stated quietly
+          * rather than left to the reader to infer from the name or the balance.
+          */}
+        <span style={nameColumnStyle}>
+          <span style={nameStyle} title={account.name}>{account.name}</span>
+          <span style={productStyle}>{product}</span>
+        </span>
       </span>
       <span style={rowEndStyle}>
         <span style={waiting ? { ...balanceStyle, color: 'var(--dsw-alias-state-warning-primary, #b45309)' } : balanceStyle}>
@@ -398,56 +442,91 @@ function ModelsBlock({ variant, status, busy, t, onContext, onRefresh }: {
   )
 }
 
-/** Everything one product's block contains. */
-function VariantBlock({ variant, status, busy, now, t, onAdd, onAction, onContext, onRefreshModels }: {
+/** One pooled account together with the product it belongs to. */
+interface TaggedAccount {
+  account: WorkBuddyWebAccount
   variant: WorkBuddyCardVariant
-  status: WorkBuddyWebStatus | undefined
+}
+
+/**
+ * Every account from every product, as one list.
+ *
+ * Why the two pools are shown together: an account is an account — the user is
+ * looking at "what can serve a request right now", and splitting that answer by
+ * product made the list read as two separate features when it is one. Which
+ * product a row belongs to is still on the row, as a quiet label under the name,
+ * because that is the one fact that must not be inferred: the two products'
+ * credits are not convertible and their models are not shared.
+ *
+ * The totals stay separate for the same reason; summing them would produce a
+ * number that describes nothing.
+ */
+function AccountsSection({ entries, statuses, busy, now, t, onAdd, onAction }: {
+  entries: readonly TaggedAccount[]
+  statuses: Partial<Record<string, WorkBuddyWebStatus>>
   busy: boolean
   now: number
   t: Translate
-  onAdd: (variant: WorkBuddyCardVariant) => void
-  onAction: (action: WorkBuddyAccountAction) => void
-  onContext: (model: string, length: number) => void
-  onRefreshModels: () => void
+  onAdd: () => void
+  onAction: (variant: WorkBuddyCardVariant, action: WorkBuddyAccountAction) => void
 }): React.ReactNode {
-  const accounts = status !== undefined && 'accounts' in status ? status.accounts : undefined
-  const list = accounts?.accounts ?? []
-  // Only accounts whose balance is actually known contribute: an unknown figure
-  // is not a zero, and adding it as one would understate the total.
-  const known = list.map(account => account.credits).filter((value): value is number => typeof value === 'number')
-  const total = known.reduce((sum, value) => sum + value, 0)
   return (
     <div style={groupStyle}>
       <div style={groupHeadStyle}>
-        <h3 style={groupTitleStyle}>{t(variant.titleKey)}</h3>
-        <button type="button" style={buttonStyle} disabled={busy} onClick={() => { onAdd(variant) }}>
+        <h3 style={groupTitleStyle}>{t('accountHeading')}</h3>
+        <button type="button" style={buttonStyle} disabled={busy} onClick={onAdd}>
           {t('accountAdd')}
         </button>
       </div>
-      {list.length === 0
+      {entries.length === 0
         ? <p style={metaStyle}>{t('accountEmpty')}</p>
-        : list.map(account => (
-            <AccountRow key={account.id} account={account} busy={busy} now={now} t={t} onAction={onAction} />
+        : entries.map(({ account, variant }) => (
+            <AccountRow
+              key={account.id}
+              account={account}
+              product={t(variant.titleKey)}
+              busy={busy}
+              now={now}
+              t={t}
+              onAction={action => { onAction(variant, action) }}
+            />
           ))}
-      <div style={totalRowStyle}>
-        <span style={totalLabelStyle}>{t('accountTotalCredits')}</span>
-        <span style={totalValueStyle}>
-          {known.length === 0
-            ? '—'
-            : new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(total)}
-        </span>
-      </div>
-      {/* Accounts first, models below: the model list is the longer one and the
-          one you come back to, so putting the pool above it keeps the short,
-          occasionally-changed block out of its way. */}
-      <ModelsBlock
-        variant={variant}
-        status={status}
-        busy={busy}
-        t={t}
-        onContext={onContext}
-        onRefresh={onRefreshModels}
-      />
+      {totalRows(statuses, t)}
+    </div>
+  )
+}
+
+/** One product's total, when that product has accounts at all. */
+function totalRows(
+  statuses: Partial<Record<string, WorkBuddyWebStatus>>,
+  t: Translate,
+): React.ReactNode {
+  const rows = CARD_VARIANTS.flatMap(variant => {
+    const status = statuses[variant.id]
+    const list = status !== undefined && 'accounts' in status ? status.accounts?.accounts ?? [] : []
+    if (list.length === 0) return []
+    // Only accounts whose balance is actually known contribute: an unknown
+    // figure is not a zero, and adding it as one would understate the total.
+    const known = list.map(account => account.credits).filter((value): value is number => typeof value === 'number')
+    const total = known.reduce((sum, value) => sum + value, 0)
+    return [{ id: variant.id, name: t(variant.titleKey), total: known.length === 0 ? undefined : total }]
+  })
+  if (rows.length === 0) return null
+  return (
+    <div style={totalRowStyle}>
+      <span style={totalLabelStyle}>{t('accountTotalCredits')}</span>
+      <span style={totalsStyle}>
+        {rows.map(row => (
+          <span key={row.id} style={totalPairStyle}>
+            <span style={totalProductStyle}>{row.name}</span>
+            <span style={totalProductValueStyle}>
+              {row.total === undefined
+                ? '—'
+                : new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(row.total)}
+            </span>
+          </span>
+        ))}
+      </span>
     </div>
   )
 }
@@ -462,6 +541,9 @@ function ProductPicker({ t, onPick, onCancel }: {
     <div style={overlayStyle} role="presentation" onClick={event => { if (event.target === event.currentTarget) onCancel() }}>
       <div style={dialogStyle} role="dialog" aria-modal="true" aria-label={t('accountAddTitle')}>
         <h3 style={dialogTitleStyle}>{t('accountAddTitle')}</h3>
+        {/* The question is stated, not implied by two bare buttons: an account
+            belongs to one product, and the two pools never mix. */}
+        <p style={dialogBodyStyle}>{t('accountAddPickHint')}</p>
         <button type="button" style={buttonStyle} onClick={() => { onPick(CARD_VARIANTS[0] as WorkBuddyCardVariant) }}>
           {t('accountAddCn')}
         </button>
@@ -477,13 +559,22 @@ function ProductPicker({ t, onPick, onCancel }: {
   )
 }
 
+/** How one product can be signed into. */
+type SignInMode = 'qr' | 'web' | 'token'
+
 /**
  * The sign-in dialog for one product.
  *
- * The CN product offers both routes; the international one offers only the
- * pasted token, because there is no app that can scan for it — the QR endpoint
- * answers, but there is nothing on the user's phone that completes it, so
- * showing the segment would be offering a path that cannot be walked.
+ * Both products offer a browser sign-in and a pasted token. Only the CN product
+ * offers the scannable code: the international QR endpoint answers, but there is
+ * no app on a phone that completes it, so showing a code would be offering a
+ * path that cannot be walked. The international product's browser route is
+ * therefore a plain link to its console rather than a QR.
+ *
+ * The browser route only *starts* a sign-in — it is the console, and the plugin
+ * cannot observe what happens there. So the token half is not a fallback for it
+ * but its other half: the user signs in on the web, copies the token, and pastes
+ * it. The copy says so rather than leaving the two tabs unexplained.
  */
 function AddAccountDialog({ variant, t, busy, error, onCancel, onSubmitQr, onPollQr, onSubmitToken }: {
   variant: WorkBuddyCardVariant
@@ -496,7 +587,7 @@ function AddAccountDialog({ variant, t, busy, error, onCancel, onSubmitQr, onPol
   onSubmitToken: (token: string) => Promise<boolean>
 }): React.ReactNode {
   const qrSupported = variant.id === 'workbuddy'
-  const [mode, setMode] = useState<'qr' | 'token'>(qrSupported ? 'qr' : 'token')
+  const [mode, setMode] = useState<SignInMode>(qrSupported ? 'qr' : 'web')
   const [challenge, setChallenge] = useState<WorkBuddyQrChallenge>()
   const [token, setToken] = useState('')
   const [remaining, setRemaining] = useState(0)
@@ -551,21 +642,24 @@ function AddAccountDialog({ variant, t, busy, error, onCancel, onSubmitQr, onPol
     <div style={overlayStyle} role="presentation" onClick={event => { if (event.target === event.currentTarget) onCancel() }}>
       <div style={dialogStyle} role="dialog" aria-modal="true" aria-label={t(variant.titleKey)}>
         <h3 style={dialogTitleStyle}>{t('accountAddTitle')}</h3>
-        {qrSupported
-          ? (
-            <div style={{ display: 'flex', justifyContent: 'center' }}>
-              <SegmentedControl
-                label={t('accountActionLogin')}
-                value={mode}
-                options={[
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <SegmentedControl
+            label={t('accountActionLogin')}
+            value={mode}
+            options={qrSupported
+              // The scannable code is the CN product's default because that is
+              // the flow its app completes on its own.
+              ? [
                   { value: 'qr' as const, label: t('accountLoginQr') },
                   { value: 'token' as const, label: t('accountLoginToken') },
+                ]
+              : [
+                  { value: 'web' as const, label: t('accountLoginWeb') },
+                  { value: 'token' as const, label: t('accountLoginToken') },
                 ]}
-                onChange={setMode}
-              />
-            </div>
-          )
-          : null}
+            onChange={setMode}
+          />
+        </div>
 
         {mode === 'qr'
           ? <>
@@ -592,7 +686,23 @@ function AddAccountDialog({ variant, t, busy, error, onCancel, onSubmitQr, onPol
                 </button>
               </div>
             </>
-          : <>
+          : mode === 'web'
+            ? <>
+                <p style={dialogBodyStyle}>{t('accountWebBody')}</p>
+                <div style={dialogActionsStyle}>
+                  <button
+                    type="button"
+                    style={primaryStyle}
+                    // The system browser, not an in-app window: the sign-in
+                    // happens on the provider's own page, where the user's
+                    // existing session and password manager already live.
+                    onClick={() => { window.open(variant.consoleUrl, '_blank', 'noopener,noreferrer') }}
+                  >
+                    {t('accountOpenLink')}
+                  </button>
+                </div>
+              </>
+            : <>
               <p style={dialogBodyStyle}>{t('accountTokenBody')}</p>
               <textarea
                 style={tokenAreaStyle}
@@ -806,24 +916,45 @@ export function WorkBuddySettingsPage({ t }: WorkBuddySettingsPageProps): React.
       .finally(() => { if (mounted.current) setBusy(false) })
   }, [readAll, run, t])
 
+  /**
+   * Every product's accounts in one list, each tagged with its product.
+   *
+   * Tagged rather than looked up later: a row's controls must post to the route
+   * of the pool the account actually lives in, and the only thing that decides
+   * that is which status document it came from.
+   */
+  const taggedAccounts: TaggedAccount[] = CARD_VARIANTS.flatMap(variant => {
+    const status = statuses[variant.id]
+    if (status === undefined || !('accounts' in status)) return []
+    return (status.accounts?.accounts ?? []).map(account => ({ account, variant }))
+  })
+
   return (
     <div style={pageStyle}>
       <div style={cardStyle}>
+        {/* Accounts first, models below: the pool is short and rarely changed,
+            while the model list is the long one a reader scans. */}
+        <AccountsSection
+          entries={taggedAccounts}
+          statuses={statuses}
+          busy={busy}
+          now={now}
+          t={t}
+          // One button, and it opens the product picker: which product an
+          // account belongs to is the first thing the dialog has to know, and
+          // it cannot be inferred from the click.
+          onAdd={() => { setError(undefined); setPicking(true) }}
+          onAction={accountAction}
+        />
         {CARD_VARIANTS.map(variant => (
-          <VariantBlock
+          <ModelsBlock
             key={variant.id}
             variant={variant}
             status={statuses[variant.id]}
             busy={busy}
-            now={now}
             t={t}
-            // The block's own button opens the product picker, which then
-            // decides whose dialog opens. Passing the block's variant through
-            // would skip the choice the user was just offered.
-            onAdd={() => { setError(undefined); setPicking(true) }}
-            onAction={action => { accountAction(variant, action) }}
             onContext={(model, length) => { accountAction(variant, { action: 'context', model, length }) }}
-            onRefreshModels={() => { refreshModels(variant) }}
+            onRefresh={() => { refreshModels(variant) }}
           />
         ))}
       </div>
