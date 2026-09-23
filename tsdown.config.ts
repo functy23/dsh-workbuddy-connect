@@ -12,9 +12,12 @@ const PACKAGE_VERSION = JSON.parse(
 const VERSION_DEFINE = { __DSH_WORKBUDDY_VERSION__: JSON.stringify(PACKAGE_VERSION) }
 
 /**
- * Packages the host's browser module loader provides.
+ * Modules the host loader provides, kept out of the browser bundle. The
+ * client's DSH imports are type-only today — they erase at build time, so the
+ * emitted bundle only requires React. The list is the guardrail that keeps a
+ * future value import `require`d from the host instead of inlined.
  *
- * \`react-dom\` belongs here because the client half uses a portal to render over
+ * `react-dom` belongs here because the client half uses a portal to render over
  * the conversation, and bundling a second copy of ReactDOM would give that
  * portal a different reconciler than the one painting the page.
  */
@@ -23,7 +26,6 @@ const CLIENT_EXTERNALS = [
   'react/jsx-runtime',
   'react-dom',
   '@deepseek-ai/cordis',
-  '@deepseek-ai/dsh-client-runtime/client',
   '@deepseek-ai/dsh-client-ui-slots',
   // Declared by the settings page's slot; keeping it external matches how the
   // other client-only packages are handled.

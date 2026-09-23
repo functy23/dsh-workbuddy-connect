@@ -18,11 +18,17 @@
   "include": [
     "src/client",
     "tests/probe-composer.spec.ts",
+    "tests/plugin-card.spec.ts",
     "tests/client-variants.spec.ts",
     "tests/slot-registration.spec.ts",
+    "tests/client-defects.spec.ts",
+    "tests/client-fallback.spec.ts",
+    "tests/model-visibility-card.spec.ts",
+    "tests/electron-assist.spec.ts",
     "tests/qr-code.spec.ts",
     "tests/floating-accounts.spec.ts",
     "tests/settings-page.spec.ts",
-    "tests/segmented.spec.ts"
+    "tests/segmented.spec.ts",
+    "tests/panel-view.spec.ts"
   ]
 }

@@ -25,8 +25,17 @@ import type { WorkBuddyEffort } from './upstream.ts'
 /** Basename of the probe record inside the Harness home. */
 export const WORKBUDDY_PROBE_FILENAME = '.workbuddy-probe.json'
 
-/** On-disk format this reader accepts; other versions are discarded. */
-const PROBE_FORMAT_VERSION = 1
+/**
+ * On-disk format this reader accepts; other versions are discarded.
+ *
+ * Version 2 nested the records under the account that produced them
+ * (`records[account][modelId]`), so two accounts no longer overwrite each
+ * other's observations for the same model. Version 1 files (flat, one record
+ * per model) are deliberately not migrated: they read as empty and the
+ * affected models are re-probed on demand, which keeps the reader free of
+ * half-understood compatibility paths.
+ */
+const PROBE_FORMAT_VERSION = 2
 
 /**
  * How long an observation stays usable. Conservative on purpose: the plan's
@@ -64,17 +73,18 @@ export interface WorkBuddyProbeRecord {
    *
    * An effort set is a fact about one account's entitlement as much as about
    * the model: the same model id can accept different levels under a different
-   * subscription. Without this a record outlived the account that produced it,
-   * so signing out and in as someone else inherited the previous account's
-   * detected levels. Records written before this field existed carry no
-   * identity and are therefore never reused.
+   * subscription. Records are stored under this identity and only ever served
+   * back to it, so one account never inherits another's detected levels — and
+   * because the store nests by this identity, switching back finds this
+   * account's own records intact rather than re-probing from scratch.
    */
-  account?: string
+  account: string
 }
 
 interface ProbeDocument {
   version: typeof PROBE_FORMAT_VERSION
-  records: Record<string, WorkBuddyProbeRecord>
+  /** Records nested by the account that produced them, then by model id. */
+  records: Record<string, Record<string, WorkBuddyProbeRecord>>
 }
 
 /**
@@ -133,6 +143,7 @@ function isRecord(value: unknown): value is WorkBuddyProbeRecord {
   if (typeof wrapped['fingerprint'] !== 'string') return false
   if (typeof wrapped['probedAtMs'] !== 'number' || !Number.isFinite(wrapped['probedAtMs'])) return false
   if (typeof wrapped['pluginVersion'] !== 'string') return false
+  if (typeof wrapped['account'] !== 'string' || wrapped['account'] === '') return false
   const efforts = wrapped['efforts']
   if (!Array.isArray(efforts) || efforts.some(effort => typeof effort !== 'string')) return false
   return true
@@ -151,15 +162,16 @@ export interface WorkBuddyProbeStoreOptions {
 }
 
 /**
- * The plugin's probe records: read once, written atomically, never trusted
- * across a fingerprint change or past the TTL.
+ * The plugin's probe records: read once, written atomically, keyed by the
+ * account that produced each observation, and never trusted across a
+ * fingerprint change or past the TTL.
  */
 export class WorkBuddyProbeStore {
   private readonly path: string
   private readonly ttlMs: number
   private readonly pluginVersion: string
   private readonly now: () => number
-  private records: Record<string, WorkBuddyProbeRecord> | undefined
+  private records: Record<string, Record<string, WorkBuddyProbeRecord>> | undefined
 
   constructor(options: WorkBuddyProbeStoreOptions | string) {
     // A bare string stays accepted for the pre-plan call sites that only cared
@@ -178,12 +190,17 @@ export class WorkBuddyProbeStore {
     return this.path
   }
 
-  private load(): Record<string, WorkBuddyProbeRecord> {
+  private load(): Record<string, Record<string, WorkBuddyProbeRecord>> {
     if (this.records === undefined) {
       const document = readDocument(this.path)
-      const records: Record<string, WorkBuddyProbeRecord> = {}
-      for (const [id, record] of Object.entries(document?.records ?? {})) {
-        if (isRecord(record)) records[id] = record
+      const records: Record<string, Record<string, WorkBuddyProbeRecord>> = {}
+      for (const [account, bucket] of Object.entries(document?.records ?? {})) {
+        if (typeof bucket !== 'object' || bucket === null || Array.isArray(bucket)) continue
+        const parsed: Record<string, WorkBuddyProbeRecord> = {}
+        for (const [modelId, record] of Object.entries(bucket)) {
+          if (isRecord(record)) parsed[modelId] = record
+        }
+        records[account] = parsed
       }
       this.records = records
     }
@@ -191,32 +208,34 @@ export class WorkBuddyProbeStore {
   }
 
   /**
-   * The usable record for a model, or `undefined` when there is none, it is
-   * expired, it was taken against a different catalog row, or it belongs to a
-   * different account.
+   * The usable record for one account and model, or `undefined` when there is
+   * none, it is expired, it was taken against a different catalog row, or it
+   * belongs to a different account.
    *
    * @param account - the account in effect, as `uid:enterpriseId`. Records are
    *   only returned for the account that produced them.
    */
   get(modelId: string, fingerprint: string, account: string): WorkBuddyProbeRecord | undefined {
-    const record = this.load()[modelId]
+    const record = this.load()[account]?.[modelId]
     if (record === undefined) return undefined
     if (record.fingerprint !== fingerprint) return undefined
-    // A record with no identity is one written before account binding existed;
-    // it cannot be attributed, so it is not reused.
+    // Defense in depth: the two-level keying already isolates accounts, but a
+    // record's own identity field has the final say on who it answers for.
     if (record.account !== account) return undefined
     if (this.now() - record.probedAtMs > this.ttlMs) return undefined
     return record
   }
 
   /**
-   * Store one observation. Only a decisive answer (`validating` /
-   * `non-validating`) replaces an existing decisive record: a transient
-   * `unknown` must not erase knowledge the user already paid for.
+   * Store one observation under the account stamped on it. Only a decisive
+   * answer (`validating` / `non-validating`) replaces an existing decisive
+   * record *of the same account*: a transient `unknown` must not erase
+   * knowledge the user already paid for.
    */
   set(modelId: string, record: WorkBuddyProbeRecord): void {
     const records = this.load()
-    const existing = records[modelId]
+    const bucket = records[record.account] ?? (records[record.account] = {})
+    const existing = bucket[modelId]
     if (
       record.validation === 'unknown'
       && existing !== undefined
@@ -225,19 +244,20 @@ export class WorkBuddyProbeStore {
     ) {
       return
     }
-    records[modelId] = record
+    bucket[modelId] = record
     this.persist()
   }
 
-  /** Drop every record; used by the card's explicit "clear" action. */
+  /** Drop every record of every account; used by the card's explicit "clear" action. */
   clear(): void {
     this.records = {}
     this.persist()
   }
 
-  /** Every record currently held, for status display. */
-  all(): Readonly<Record<string, WorkBuddyProbeRecord>> {
-    return { ...this.load() }
+  /** Every record currently held, grouped by account, for status display. */
+  all(): Readonly<Record<string, Readonly<Record<string, WorkBuddyProbeRecord>>>> {
+    const records = this.load()
+    return Object.fromEntries(Object.entries(records).map(([account, bucket]) => [account, { ...bucket }]))
   }
 
   /** Build a record stamped with this store's clock, version, and account. */

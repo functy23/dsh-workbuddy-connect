@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { classifyUpstreamError, prepareChatBody, regionOf } from '../src/upstream.ts'
+import { classifyUpstreamError, prepareChatBody, prepareInternationalChatBody, regionOf } from '../src/upstream.ts'
 
 describe('prepareChatBody', () => {
   it('forces stream true', () => {
@@ -13,6 +13,18 @@ describe('prepareChatBody', () => {
   it('flattens object tool_choice auto', () => {
     const body = JSON.parse(prepareChatBody(JSON.stringify({ tool_choice: { type: 'auto' } })))
     expect(body['tool_choice']).toBe('auto')
+  })
+
+  it('passes `reasoning_effort` through verbatim, including the adapter\'s own `off` (issue #49)', () => {
+    // The shared preparation is region-agnostic: the CN variant keeps its
+    // existing wire behaviour, so `off` (and any other value) survives here.
+    // The international-only strip lives one layer down, in
+    // `prepareInternationalChatBody` — pinned by the tests below and by the
+    // chatStream-level spec in upstream.spec.ts.
+    for (const effort of ['off', 'low', 'medium', 'high', 'xhigh', 'max', 'none']) {
+      const body = JSON.parse(prepareChatBody(JSON.stringify({ messages: [], reasoning_effort: effort })))
+      expect(body['reasoning_effort']).toBe(effort)
+    }
   })
 
   it('flattens named function tool_choice to the function name', () => {
@@ -116,5 +128,39 @@ describe('regionOf', () => {
     expect(regionOf('workbuddy.ai')).toBe('global')
     expect(regionOf('US.WorkBuddy.AI')).toBe('global')
     expect(regionOf('')).toBe('cn')
+  })
+})
+
+describe('prepareInternationalChatBody effort handling (issue #49)', () => {
+  it('drops the adapter\'s own `off` spelling on the international wire', () => {
+    // pi-ai sends `model.thinkingLevelMap.off` for every request that carries
+    // no explicit level; the international endpoint rejects it on the GPT
+    // family with 400 / 11133 / `extError.param === 'reasoning.effort'`.
+    // Omission is the only form measured good on every such model — including
+    // `gpt-6-astra`, which also rejects a literal `'none'`.
+    const body = JSON.parse(prepareInternationalChatBody(JSON.stringify({
+      model: 'gpt-5.6-sol',
+      messages: [{ role: 'system', content: 'You are a helpful assistant.' }],
+      reasoning_effort: 'off',
+    })))
+    expect('reasoning_effort' in body).toBe(false)
+  })
+
+  it('keeps declared spellings and an explicit `none` untouched', () => {
+    for (const effort of ['low', 'medium', 'high', 'xhigh', 'max', 'none']) {
+      const body = JSON.parse(prepareInternationalChatBody(JSON.stringify({
+        messages: [{ role: 'system', content: 'You are a helpful assistant.' }],
+        reasoning_effort: effort,
+      })))
+      expect(body['reasoning_effort']).toBe(effort)
+    }
+  })
+
+  it('strips `off` on every early-return path, not only the system-prompt one', () => {
+    // A body without a messages array takes an early return; the strip must
+    // still apply, or such a request would reach the international endpoint
+    // carrying the rejected spelling.
+    const body = JSON.parse(prepareInternationalChatBody(JSON.stringify({ reasoning_effort: 'off' })))
+    expect('reasoning_effort' in body).toBe(false)
   })
 })

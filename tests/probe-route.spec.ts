@@ -164,6 +164,19 @@ describe('probe control route', () => {
     expect(calls).toEqual(['clear'])
   })
 
+  it('accepts the maximum-context preference only when the host supports it', async () => {
+    let enabled: boolean | undefined
+    const { origin, key } = await mount({
+      setMaximumContextWindow: async value => {
+        enabled = value
+        return { state: 'updated' }
+      },
+    })
+    const result = await post(origin, { action: 'set-maximum-context-window', enabled: true }, { 'X-WorkBuddy-Probe-Key': key })
+    expect(result).toMatchObject({ status: 200, body: { state: 'updated' } })
+    expect(enabled).toBe(true)
+  })
+
   it('mints a distinct key per call', () => {
     expect(createProbeKey()).not.toBe(createProbeKey())
   })

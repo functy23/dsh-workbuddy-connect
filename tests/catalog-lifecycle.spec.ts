@@ -5,8 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
-import SettingsProvider from '@deepseek-ai/dsh-settings'
-import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
+import { FakeSettingsService } from './fake-settings.ts'
 import * as WorkBuddy from '../src/index.ts'
 import { WorkBuddyAccountPool } from '../src/account-pool.ts'
 import { WorkBuddyAccountService } from '../src/account-service.ts'
@@ -21,20 +20,6 @@ import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
  * behaviour under test lives in the wiring rather than in any one module — the
  * credential sweep, the catalog gate, and the retry backoff all have to agree.
  */
-
-class MemorySettings extends SettingsProvider {
-  readonly writable = true
-  private storedDocument: Record<string, unknown> = {}
-
-  protected load(): Promise<Record<string, unknown>> {
-    return Promise.resolve(structuredClone(this.storedDocument))
-  }
-
-  protected persist(ns: SettingsNamespace, section: Record<string, unknown>): Promise<void> {
-    this.storedDocument[ns] = structuredClone(section)
-    return Promise.resolve()
-  }
-}
 
 const CLEANUP: (() => Promise<void>)[] = []
 let context: Context | undefined
@@ -121,7 +106,7 @@ async function boot(): Promise<Context> {
   const ctx = new Context()
   context = ctx
   await ctx.plugin(LlmRuntime)
-  await ctx.plugin(MemorySettings)
+  await ctx.plugin(FakeSettingsService)
   await ctx.plugin(FakeWebServer)
   await ctx.plugin(WorkBuddy, {})
   await vi.waitFor(() => {
@@ -309,7 +294,7 @@ describe('catalog lifecycle', () => {
    * gone, fallback serving, source honestly 'fallback' with the error. Then the
    * next refresh succeeds and B's roster lands.
    */
-  it('manual refresh after an account switch drops the old account data even when it fails', async () => {
+  it('stops serving the old account after a switch even when the refresh fails, and restores it on return', async () => {
     const root = await tempDir()
     const cnFile = join(root, 'cn.info')
     await writeFile(cnFile, credentialDocument('copilot.tencent.com', 'uid-a'))
@@ -331,17 +316,19 @@ describe('catalog lifecycle', () => {
       reasoning: { supports: false, onlyReasoning: false, canDisableThinking: true },
     }
     await writeFile(join(root, '.workbuddy-probe.json'), JSON.stringify({
-      version: 1,
+      version: 2,
       records: {
-        'acct-a-model': {
-          fingerprint: fingerprintModel(liveRowA),
-          validation: 'validating',
-          efforts: ['low'],
-          probedAtMs: Date.now(),
-          pluginVersion: 'test',
-          // Observations are bound to the account that produced them; a record
-          // without this is refused by design, so this names account A.
-          account: 'uid-a:ent-1',
+        'uid-a:ent-1': {
+          'acct-a-model': {
+            fingerprint: fingerprintModel(liveRowA),
+            validation: 'validating',
+            efforts: ['low'],
+            probedAtMs: Date.now(),
+            pluginVersion: 'test',
+            // Observations are bound to the account that produced them; a record
+            // without this is refused by design, so this names account A.
+            account: 'uid-a:ent-1',
+          },
         },
       },
     }))
@@ -387,7 +374,8 @@ describe('catalog lifecycle', () => {
     expect(failed.status).toBe(200)
     expect(await failed.json()).toMatchObject({ state: 'failed' })
 
-    // The invariant: nothing of account A's survives a confirmed switch.
+    // The invariant: nothing of account A's is *served* under account B. Its
+    // observation survives on disk (keyed to A) but no read under B sees it.
     const after = await get('/plugins/dsh-workbuddy-connect/status')
     expect(after.probe.results).toEqual([])
     expect(after.catalog.source).toBe('fallback')
@@ -403,6 +391,18 @@ describe('catalog lifecycle', () => {
     expect(await ok.json()).toMatchObject({ state: 'refreshed' })
     await vi.waitFor(async () => {
       expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toEqual(['acct-b-model'])
+    })
+
+    // And back to A: its roster and its recorded levels return without a fresh
+    // detection — the observation survived the round trip through account B.
+    await writeFile(cnFile, credentialDocument('copilot.tencent.com', 'uid-a'))
+    rosterModel = 'acct-a-model'
+    const back = await post('/plugins/dsh-workbuddy-connect/probe', key, { action: 'refresh' })
+    expect(await back.json()).toMatchObject({ state: 'refreshed' })
+    await vi.waitFor(async () => {
+      const status = await get('/plugins/dsh-workbuddy-connect/status')
+      expect(status.probe.results.map((r: { id: string }) => r.id)).toContain('acct-a-model')
+      expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toEqual(['acct-a-model'])
     })
   }, 45_000)
 })
@@ -526,7 +526,12 @@ describe('identity changes during catalog loading', () => {
     await writeFile(cnFile, credentialDocument('copilot.tencent.com', 'uid-b'))
 
     await vi.waitFor(async () => {
-      expect(calls).toBe(2)
+      // One refresh is now two documents since the CN read joined
+      // /v3/config — the config call plus the best-effort console badge
+      // read — so account B's refresh lands on calls 2 and 3 after account
+      // A's aborted call 1. The exact total is an implementation detail of
+      // how many documents a refresh needs; only the abort invariant is pinned.
+      expect(calls).toBeGreaterThanOrEqual(3)
       expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toEqual(['account-b-model'])
     })
     expect(aborted).toBe(true)

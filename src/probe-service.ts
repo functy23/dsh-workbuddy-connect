@@ -39,8 +39,8 @@ export interface WorkBuddyProbeServiceOptions {
    * Records are read and written against this identity, and it is re-checked
    * after the sweep finishes: an observation produced under account A must not
    * be stored once account B is in effect, however long the probe took. The
-   * caller's `clear()` on an account switch is not sufficient on its own,
-   * because an in-flight probe completes *after* that clear.
+   * store's per-account keying alone cannot catch that, because an in-flight
+   * probe completes *after* the switch has already happened.
    */
   account: () => string | undefined
   sentinel?: SentinelFactory

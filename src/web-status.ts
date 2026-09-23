@@ -15,12 +15,13 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { WorkBuddyAccountService } from './account-service.ts'
+import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyUpstreamClient } from './upstream.ts'
 import { normalizeCredits } from './upstream.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
-import type { WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus } from './status-paths.ts'
+import type { WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from './status-paths.ts'
 
 export { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
 export type { WorkBuddyWebStatus } from './status-paths.ts'
@@ -64,6 +65,30 @@ export interface WorkBuddyStatusRouteOptions {
    * fix, not told to sign in.
    */
   emptyReason?: () => string | undefined
+  /**
+   * The credential store the signed-out *reason code* is read from.
+   *
+   * Optional so a route assembled without one (tests, headless profiles) still
+   * answers: the document then carries the prose alone and the browser falls
+   * back to the generic hint. The pool is the authority on what is actually
+   * served; this is the authority on *why* nothing is.
+   */
+  store?: Pick<WorkBuddyCredentialStore, 'status'>
+  /**
+   * International-card preference selecting larger declared context windows.
+   * The getter may answer `undefined` when this host cannot persist the
+   * preference (a 0.1.7 settings service has no section API): the field then
+   * stays out of the document, and the card renders no control for it.
+   */
+  useMaximumContextWindow?: () => boolean | undefined
+  /**
+   * Per-account hidden-model state for the card's visibility controls.
+   * Undefined when the caller offers none (tests, headless profiles); a
+   * defined getter may still answer undefined — a signed-in account without a
+   * stable uid has no bucket to key preferences by, and the card then renders
+   * no visibility controls rather than a list every such account would share.
+   */
+  visibility?: () => WorkBuddyWebVisibilitySection | undefined
   /**
    * Route path to mount. Defaults to the CN variant's path so existing callers
    * and tests keep their behaviour; the international variant passes its own.
@@ -109,10 +134,21 @@ export async function workBuddyWebStatus(
     // card explains how to get an account rather than reporting a dead one. A
     // diagnosable cause (a credential for the other product) wins over the
     // generic hint, because it names the file to fix.
+    //
+    // The reason code travels beside the prose so the browser can branch on the
+    // cause without matching on wording: the credential store is the authority
+    // on *why* no credential is usable, and its answer is what decides whether
+    // the Agent-assist block applies. This branch deliberately does not run
+    // `safeMessage` on it — the store produces a short, path-only diagnosis, so
+    // any new failure path added here must keep credentials, payloads and
+    // subprocess output out of its own message.
     const diagnosed = deps.emptyReason?.()
+    const authStatus = deps.store === undefined ? undefined : await deps.store.status()
     return {
       status: 'signed-out',
-      reason: diagnosed ?? 'no account yet: sign in to the desktop app, or add one by QR from this card',
+      reason: diagnosed ?? authStatus?.reason
+        ?? 'no account yet: sign in to the desktop app, or add one by QR from this card',
+      ...authStatus?.reasonCode === undefined ? {} : { reasonCode: authStatus.reasonCode },
       // The account section and the control key travel even with an empty pool.
       // They are how the pool stops being empty: the card's "add by QR" action
       // is a write, so withholding the key until an account existed would make
@@ -166,6 +202,10 @@ export async function workBuddyWebStatus(
       // one the adapter hands pi-ai.
       const chosen = deps.resolveContextWindow?.(model.id, supported)
       const effective = chosen ?? model.contextWindow
+      // The upstream default, carried when the maximum-window preference is
+      // what moved the working window off it, so the card can say which two
+      // numbers it is choosing between.
+      const defaultContextWindow = model.defaultContextWindow ?? model.contextWindow
       // A control is only worth showing when there is something to choose.
       const choices = supported.length > 1 ? [...supported].sort((left, right) => left - right) : undefined
       return {
@@ -180,10 +220,15 @@ export async function workBuddyWebStatus(
         // repeating a stale figure or implying the model is free.
         ...model.billing?.rateUnknown === true ? { rateUnknown: true as const } : {},
         // The window in force, which is the upstream's default unless the user
-        // chose one of the other lengths it declares.
+        // chose one of the other lengths it declares (or the international card
+        // opted into the largest one it offers).
         ...typeof effective === 'number' && effective > 0 ? { contextWindow: effective } : {},
+        ...typeof defaultContextWindow === 'number' && defaultContextWindow > 0
+          && defaultContextWindow < effective
+          ? { defaultContextWindow }
+          : {},
         ...choices === undefined ? {} : { contextChoices: choices, contextChoice: effective },
-        ...maxContextWindow === undefined || maxContextWindow === model.contextWindow
+        ...maxContextWindow === undefined || maxContextWindow <= effective
           ? {}
           : { maxContextWindow },
         ...typeof model.maxInputTokens === 'number' && model.maxInputTokens > 0
@@ -195,27 +240,41 @@ export async function workBuddyWebStatus(
   // "no models" is precisely the case a user needs explained, and it is the
   // only way to tell a hidden group from a failed fetch.
   const catalog = deps.catalog?.()
-  const withCatalog = catalog === undefined ? status : { ...status, catalog }
-  const statusWithModels = modelsField.length > 0
-    ? { ...withCatalog, models: modelsField }
-    : withCatalog
+  const withCatalog: WorkBuddyWebStatus = catalog === undefined ? status : { ...status, catalog }
+  // Visibility rides the document beside the model list it qualifies. Absent
+  // when no account-with-uid is in effect; the card keys its controls on the
+  // section's presence.
+  const visibility = deps.visibility?.()
+  const withVisibility: WorkBuddyWebStatus = visibility === undefined ? withCatalog : { ...withCatalog, visibility }
+  const statusWithModels: WorkBuddyWebStatus = modelsField.length > 0
+    ? { ...withVisibility, models: modelsField }
+    : withVisibility
   // Probe state rides the signed-in document so the card can render the
   // consent switches and results without a second request. The control key
   // travels with it: this response already passed the loopback guard, and the
   // key authorizes only probe control, never credentials or completions.
-  const probed = deps.probe === undefined
-    ? statusWithModels
-    : {
+  let probed: WorkBuddyWebStatus = statusWithModels
+  if (deps.probe !== undefined) {
+    // The preference is offered only when the getter can answer a value; a
+    // host that cannot persist it answers `undefined` and the field stays out
+    // of this document, which is the card's signal not to render the control.
+    const maximumContextWindow = deps.useMaximumContextWindow?.()
+    probed = {
       ...statusWithModels,
       probe: deps.probe(),
       ...deps.probeKey === undefined ? {} : { probeKey: deps.probeKey },
+      ...maximumContextWindow === undefined ? {} : { useMaximumContextWindow: maximumContextWindow },
     }
+  }
   // The primary account's own balance, so the card's headline figure and the
   // per-account rows can never disagree about which account they describe.
   try {
     const credential = await deps.accounts.primaryCredential()
     if (credential !== undefined) {
       const credits = await deps.client.fetchCredits(credential)
+      // `unlimited` and `cycleResetTime` ride along as-is: the card must see
+      // "no cap" as its own state, and the fetch only sets them when the
+      // upstream actually reported them.
       return { ...probed, credits }
     }
   } catch (error: unknown) {

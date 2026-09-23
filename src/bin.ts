@@ -12,6 +12,7 @@ import { WorkBuddyUpstreamClient } from './upstream.ts'
 import { FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS } from './catalog.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { isHeartbeatProcessAlive, readHostHeartbeat, workbuddyHostHeartbeatPath } from './host-heartbeat.ts'
+import { WorkBuddyAtRestKeyProvider } from './desktop-credential-protection.ts'
 import { CN_VARIANT, variantFor, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
 import { resolveAppVersion } from './app-version.ts'
 
@@ -47,12 +48,23 @@ function printJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value)}\n`)
 }
 
-/** One variant's store plus the client that performs its refreshes. */
+/**
+ * One variant's store plus the client that performs its refreshes.
+ *
+ * The key provider is injected explicitly, and per variant, for the same
+ * reason the plugin host does it: discovery is CN/macOS-only, so the provider
+ * must not be left to its no-arg default — that default is deliberately
+ * `discovery: 'none'`, and relying on it here would quietly strip the CN CLI
+ * of the decryption it has always had.
+ */
 function makeStore(variant: WorkBuddyVariant): WorkBuddyCredentialStore {
   const client = new WorkBuddyUpstreamClient()
   return new WorkBuddyCredentialStore({
     variant,
     refresh: credential => client.refreshToken(credential),
+    keyProvider: new WorkBuddyAtRestKeyProvider({
+      discovery: variant.id === CN_VARIANT.id ? 'macos-workbuddy' : 'none',
+    }),
   })
 }
 
@@ -70,11 +82,23 @@ async function doctor(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
   const store = makeStore(variant)
   const status = await store.status()
   const desktopPresent = await store.desktopFilePresent()
+  const desktopFormat = await store.desktopAuthFormat()
+  // Name the file that was actually hit (e.g. the XDG data-home copy on
+  // UOS/deepin, issue #43), falling back to the first *possible* location
+  // when none exists so the hint still says where to point WORKBUDDY_AUTH_FILE.
+  const desktopPath = await store.resolvedDesktopAuthPath() ?? store.desktopAuthPath()
   const heartbeat = await readHostHeartbeat()
   const hostAlive = heartbeat !== undefined && isHeartbeatProcessAlive(heartbeat)
   // Only the international variant needs a UA, and reading it is how `doctor`
   // answers "where would the catalog version come from" without guessing.
   const appVersion = variant.region === 'global' ? await resolveAppVersion() : undefined
+  // A signed-out state beside an encrypted file usually means the unlock
+  // failed, not that nobody is signed in: the status reason carries the real
+  // cause, it is promoted to the first hint, and the generic "sign in again"
+  // hint is suppressed — sending the user to re-login would be the wrong fix.
+  const decryptionNote = status.state === 'signed-out' && desktopFormat === 'encrypted' && status.reason !== undefined
+    ? `Encrypted desktop credential could not be used: ${status.reason}`
+    : undefined
   const report = {
     schemaVersion: JSON_SCHEMA_VERSION,
     package: 'dsh-workbuddy-connect',
@@ -83,8 +107,13 @@ async function doctor(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
     provider: variant.id,
     displayName: variant.displayName,
     desktopAuthFile: {
-      path: store.desktopAuthPath() ?? `(no platform default; set ${variant.env})`,
+      path: desktopPath ?? `(no platform default; set ${variant.env})`,
       present: desktopPresent,
+      // How the file reads on disk: absent | plaintext | encrypted |
+      // unrecognized. WorkBuddy 5.6 seals its token fields, so "encrypted"
+      // is a healthy state, not an error — the unlock is attempted (and its
+      // failure explained) by the sign-in state below.
+      format: desktopFormat,
     },
     ownAuthFile: ownAuthPath(variant),
     ...appVersion === undefined ? {} : {
@@ -103,17 +132,18 @@ async function doctor(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
     signIn: status.state,
     fallbackModels: fallbackCount(variant),
     hints: [
-      ...status.state === 'signed-in' ? [] : [`Sign in once in the ${variant.appName} desktop app, then run status again.`],
+      ...decryptionNote !== undefined ? [decryptionNote]
+        : status.state === 'signed-out' ? [`Sign in once in the ${variant.appName} desktop app, then run status again.`] : [],
       ...desktopPresent ? [] : [`No ${variant.appName} desktop auth file at the expected path; set ${variant.env} if it lives elsewhere.`],
       ...hostAlive ? [] : ['Host bundle not running in this DSH profile (or the process exited). The browser card and provider are unavailable until DSH starts the plugin.'],
     ],
   }
   if (jsonOutput) {
-    printJson(report)
+    printJson({ ...report, ...decryptionNote === undefined ? {} : { decryptionNote } })
   } else {
     process.stdout.write([
       `${variant.displayName} Connect ${WORKBUDDY_CONNECT_VERSION} on ${process.version}`,
-      `Desktop auth file: ${report.desktopAuthFile.present ? 'present' : 'missing'} (${report.desktopAuthFile.path})`,
+      `Desktop auth file: ${report.desktopAuthFile.present ? 'present' : 'missing'} — ${desktopFormat} (${report.desktopAuthFile.path})`,
       `Host bundle: ${hostAlive ? `running (pid ${heartbeat!.pid})` : heartbeat !== undefined ? 'stale heartbeat (process exited)' : 'not started'}`,
       `Sign-in state: ${report.signIn}`,
       `Static fallback models: ${report.fallbackModels}`,
@@ -140,10 +170,16 @@ async function status(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
     }
     return 1
   }
-  let credits: { total: number; error?: string } | undefined
+  let credits: { total: number; unlimited?: true; error?: string } | undefined
   try {
     const credential = await store.current()
-    if (credential !== undefined) credits = { total: (await client.fetchCredits(credential)).total }
+    if (credential !== undefined) {
+      const fetched = await client.fetchCredits(credential)
+      credits = {
+        total: fetched.total,
+        ...fetched.unlimited === true ? { unlimited: true } : {},
+      }
+    }
   } catch (error: unknown) {
     credits = { total: 0, error: safeMessage(error) }
   }
@@ -160,6 +196,7 @@ async function status(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
       ...authStatus.domain === undefined || authStatus.domain === '' ? {} : { domain: authStatus.domain },
       source: authStatus.source,
       credits: credits?.total,
+      ...credits?.unlimited === true ? { creditsUnlimited: true } : {},
       ...credits?.error === undefined ? {} : { creditsError: credits.error },
       hostBundle: hostState,
     })
@@ -168,9 +205,13 @@ async function status(jsonOutput: boolean, variant: WorkBuddyVariant): Promise<n
   process.stdout.write([
     `${variant.displayName} Connect: signed in${authStatus.nickname === undefined ? '' : ` as ${authStatus.nickname}`}`,
     ...expiresAt === undefined ? [] : [`Access token expires ${expiresAt} (refresh is automatic)`],
-    credits?.error === undefined
-      ? `Remaining credit: ${credits?.total ?? 'unknown'}`
-      : `Remaining credit: unavailable (${credits.error})`,
+    credits?.error !== undefined
+      ? `Remaining credit: unavailable (${credits.error})`
+      // An uncapped quota has no balance to print; showing the placeholder 0
+      // would read as "exhausted".
+      : credits?.unlimited === true
+        ? 'Remaining credit: unlimited'
+        : `Remaining credit: ${credits?.total ?? 'unknown'}`,
     `Host bundle: ${hostAlive ? `running (pid ${heartbeat!.pid})` : hostState === 'stale' ? 'stale heartbeat (DSH process exited)' : 'not started in this profile'}`,
     'Client card: load failures are logged to the browser console only; the host provider is unaffected.',
     '',

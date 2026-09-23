@@ -211,3 +211,33 @@ describe('context capacity reporting', () => {
     expect(body.reason).toContain('no account')
   })
 })
+
+describe('maximum-context preference capability', () => {
+  /**
+   * The field's presence is the card's capability signal: the host includes it
+   * only when the preference can actually be persisted, so a host whose
+   * settings service lost the 0.1.2-era section API (DSH 0.1.7) answers
+   * `undefined` from the getter and the document stays silent — the card then
+   * renders no preference control at all.
+   */
+  it('carries the field when the getter answers a value', async () => {
+    const port = await startStatusServer({
+      probe: () => ({ consent: true, running: false, candidates: [], results: [] }),
+      useMaximumContextWindow: () => true,
+    })
+    const response = await requestOnce({ port, method: 'GET', headers: { host: '127.0.0.1' } })
+    const document = JSON.parse(response.body) as Record<string, unknown>
+    expect(document['useMaximumContextWindow']).toBe(true)
+  })
+
+  it('omits the field when the getter answers undefined, keeping the rest of the document', async () => {
+    const port = await startStatusServer({
+      probe: () => ({ consent: true, running: false, candidates: [], results: [] }),
+      useMaximumContextWindow: () => undefined,
+    })
+    const response = await requestOnce({ port, method: 'GET', headers: { host: '127.0.0.1' } })
+    const document = JSON.parse(response.body) as Record<string, unknown>
+    expect(document).not.toHaveProperty('useMaximumContextWindow')
+    expect(document).toHaveProperty('probe')
+  })
+})

@@ -99,14 +99,43 @@ export async function readHostHeartbeat(): Promise<WorkBuddyHostHeartbeat | unde
 }
 
 /**
+ * Parse a WMI `CreationDate` (CIM_DATETIME) into epoch milliseconds; returns
+ * `undefined` for anything that does not match the format, never throws.
+ *
+ * The CIM_DATETIME layout is `yyyymmddHHMMSS.mmmmmmsUUU`: local wall-clock
+ * fields, a 6-digit microsecond fraction, and a **3-digit signed UTC offset
+ * in minutes** (`+000`, `+480` for UTC+8, `-300` for UTC−5). The fields are
+ * therefore *not* UTC — the offset must be subtracted to obtain the epoch:
+ * `+480` means local time runs 480 minutes ahead of UTC, so
+ * `20260923104314.239907+480` is `2026-09-23T02:43:14.000Z`. A 4-digit offset
+ * is not part of the format and is rejected rather than partially matched.
+ */
+export function parseWmiCreationDate(value: string): number | undefined {
+  const m = value
+    .trim()
+    .match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\.(\d+)([+-]\d{3})$/)
+  if (m === null) return undefined
+  const [, y, mo, d, h, mi, s, , offset] = m
+  const [year, month, day, hour, minute, second] = [y, mo, d, h, mi, s].map(Number) as [number, number, number, number, number, number]
+  // Structural sanity beyond the digit shape: reject values Date.UTC would
+  // silently roll over (month 13, day 32, hour 99, …).
+  if (month < 1 || month > 12 || day < 1 || day > 31) return undefined
+  if (hour > 23 || minute > 59 || second > 59) return undefined
+  const epoch = Date.UTC(year, month - 1, day, hour, minute, second)
+    - Number(offset) * 60_000
+  return Number.isFinite(epoch) ? epoch : undefined
+}
+
+/**
  * Absolute start time (epoch ms) of the process holding `pid`, or `undefined`
  * when it cannot be determined (no such PID, platform lacks a readable source).
  *
  * - macOS / Linux: `ps -o lstart=` prints a local-time "EEE MMM DD HH:MM:SS YYYY";
  *   `Date.parse` resolves it against the local clock, which matches how
  *   `registeredAt` (a `Date.now()` absolute value) is expressed.
- * - Windows: WMI `CreationDate` is UTC (`YYYYMMDDHHMMSS.mmm+zzzz`); parsed with
- *   `Date.UTC`, again comparable to `registeredAt`.
+ * - Windows: `wmic` prints a CIM_DATETIME `CreationDate` — local fields plus a
+ *   signed minute offset (see {@link parseWmiCreationDate}); the epoch it
+ *   yields is comparable to `registeredAt`.
  *
  * Failures return `undefined` so callers can fall back to plain PID liveness
  * rather than mis-report a running host as dead.
@@ -119,11 +148,19 @@ export function processStartTimeMs(pid: number): number | undefined {
         ['process', 'where', `processid=${pid}`, 'get', 'CreationDate'],
         { encoding: 'utf8', windowsHide: true },
       )
-      const m = out.match(/(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\.\d+([+-]\d{4})/)
-      if (m === null) return undefined
-      const [, y, mo, d, h, mi, s] = m
-      const ms = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s))
-      return Number.isFinite(ms) ? ms : undefined
+      // Extract the datetime token from the header/value output, then parse it
+      // strictly; a value that does not match (or no value at all) degrades to
+      // the PID-only fallback via `undefined`.
+      //
+      // The trailing boundary is what keeps this from laundering malformed
+      // input into a well-formed token: without it `...+4800` would be
+      // truncated to `...+480`, which then passes the strict parser and
+      // silently yields a wrong epoch. Require whitespace or end-of-output
+      // after the offset so a 4-digit offset is rejected, not partially
+      // matched.
+      const token = out.match(/(\d{14})\.(\d+)([+-]\d{3})(?=\s|$)/)?.[0]
+      if (token === undefined) return undefined
+      return parseWmiCreationDate(token)
     }
     const out = execFileSync(
       'ps',

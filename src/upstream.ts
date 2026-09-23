@@ -8,6 +8,7 @@
  */
 
 import { appUserAgent, resolveAppVersion, type AppVersionInfo } from './app-version.ts'
+import { chatUserAgent, fallbackChatIdentity, resolveChatIdentity, type ChatIdentity } from './client-identity.ts'
 import type { WorkBuddyCredential } from './auth.ts'
 import type { ProbeAttempt } from './probe.ts'
 import { PROBE_MAX_TOKENS, PROBE_PROMPT } from './probe.ts'
@@ -29,6 +30,8 @@ export interface WorkBuddyUpstreamModel {
   id: string
   name: string
   contextWindow: number
+  /** The upstream's preferred window before an optional maximum is selected. */
+  defaultContextWindow?: number
   maxInputTokens?: number
   supportedContextWindows?: readonly number[]
   promotions?: readonly WorkBuddyPromotion[]
@@ -103,12 +106,25 @@ export interface WorkBuddyCreditAccount {
   packageName: string
   remain: number
   size: number
+  unlimited?: true
 }
 
 /** Aggregated credit answer for one credential. */
 export interface WorkBuddyCredits {
   total: number
   accounts: readonly WorkBuddyCreditAccount[]
+  /**
+   * The account's cycle quota is uncapped (`limitNum === -1` on the CN
+   * enterprise endpoint).
+   *
+   * A separate flag rather than a `-1`/`0` sentinel in {@link total}: the two
+   * mean opposite things to a reader ("no limit" vs "nothing left"), and the
+   * existing negative-clamp in the personal branch would turn a sentinel into
+   * a plausible-looking zero. Every renderer must therefore test this flag
+   * first and not fall back to `total` when it is set.
+   */
+  unlimited?: true
+  cycleResetTime?: string
 }
 
 /** Token refresh answer; fields the upstream omits stay absent. */
@@ -141,6 +157,38 @@ const CN_CHAT_BASE = 'https://copilot.tencent.com'
 const CN_BILLING_BASE = 'https://www.codebuddy.cn'
 const GLOBAL_BASE = 'https://www.workbuddy.ai'
 
+/**
+ * Display name for the single synthetic row the enterprise endpoint produces.
+ *
+ * The endpoint reports one cycle quota, not the personal endpoint's list of
+ * named packages, so the card's "by package" table has exactly one row.
+ */
+const enterprisePackageName = 'enterprise'
+
+/**
+ * Field names and value types of a response document, for diagnostics.
+ *
+ * Names and `typeof` only. This string ends up in the status route and then in
+ * the browser, and the response describes the account's own usage; the values
+ * themselves must never travel. Only the document and its `data` member are
+ * described, so the output stays small.
+ */
+function describeShape(document: unknown): string {
+  if (typeof document !== 'object' || document === null || Array.isArray(document)) {
+    return typeof document
+  }
+  const record = document as Record<string, unknown>
+  const at = (source: Record<string, unknown>): string => {
+    const keys = Object.keys(source).slice(0, 24)
+    return keys.length === 0 ? '(empty)' : keys.map(key => `${key}:${typeof source[key]}`).join(', ')
+  }
+  const top = `top-level { ${at(record)} }`
+  const data = record['data']
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return top
+  return `${top}; data { ${at(data as Record<string, unknown>)} }`
+}
+
+/** Shared CLI-form User-Agent for refresh and the CN catalog; chat and probe present the desktop identity (client-identity.ts). */
 const CLIENT_UA = 'CLI/2.63.2 CodeBuddy/2.63.2'
 const JSON_TIMEOUT_MS = 30_000
 const ERROR_BODY_LIMIT = 4096
@@ -222,23 +270,35 @@ export function normalizeCredits(credits: string | undefined): string | undefine
   return bare === '' ? undefined : bare
 }
 
-/** Parse the upstream `tags` / `credits` fields into billing metadata. */
-function resolveUpstreamBilling(wrapped: Record<string, unknown>): { billing: WorkBuddyModelBilling } {
+/**
+ * Parse the upstream `tags` / `credits` fields into billing metadata.
+ *
+ * @param wrapped - one catalog row.
+ * @param extraTags - badge tags recovered from another document, merged in
+ * after the row's own. The `/v3/config` product document carries the roster
+ * but no `badge:*` tags; those live only in the console catalog, so the CN
+ * refresh reads both and joins them here (see `fetchPromoBadges`).
+ */
+function resolveUpstreamBilling(
+  wrapped: Record<string, unknown>,
+  extraTags?: readonly string[],
+): { billing: WorkBuddyModelBilling } {
   const rawCredits = wrapped['credits']
   const credits = typeof rawCredits === 'string' && rawCredits.trim() !== '' ? rawCredits.trim() : undefined
   const badges: string[] = []
-  const rawTags = wrapped['tags']
-  if (Array.isArray(rawTags)) {
-    for (const tag of rawTags) {
-      if (typeof tag !== 'string') continue
-      const lowered = tag.toLowerCase()
-      if (!lowered.startsWith(BADGE_PREFIX)) continue
-      const label = tag.slice(BADGE_PREFIX.length).split(':')[0] ?? tag.slice(BADGE_PREFIX.length)
-      if (label !== '') badges.push(label)
-    }
+  const rawTags: readonly unknown[] = [...Array.isArray(wrapped['tags']) ? wrapped['tags'] : [], ...extraTags ?? []]
+  for (const tag of rawTags) {
+    if (typeof tag !== 'string') continue
+    const lowered = tag.toLowerCase()
+    if (!lowered.startsWith(BADGE_PREFIX)) continue
+    const label = tag.slice(BADGE_PREFIX.length).split(':')[0] ?? tag.slice(BADGE_PREFIX.length)
+    if (label !== '' && !badges.includes(label)) badges.push(label)
   }
-  // A `x0.00` multiplier means the model is currently free.
-  const free = credits !== undefined && /^x?0\.0+$/u.test(credits)
+  // A `x0.00` multiplier means the model is currently free. Judge from the
+  // normalized multiplier: the raw string may carry a trailing unit word
+  // (`x0.00 credits`) that a bare-multiplier match would never see.
+  const multiplier = normalizeCredits(credits)
+  const free = multiplier !== undefined && /^x?0\.0+$/u.test(multiplier)
   return {
     billing: {
       ...credits === undefined ? {} : { credits },
@@ -335,10 +395,17 @@ function commonHeaders(credential: WorkBuddyCredential): Record<string, string> 
   }
 }
 
-/** Chat request headers, including the X-No-* conventions the official CLI uses. */
-function chatHeaders(credential: WorkBuddyCredential): Record<string, string> {
+/**
+ * Chat request headers, including the X-No-* conventions the official CLI uses.
+ *
+ * `userAgent` carries the desktop identity for chat and probe requests; when
+ * it is absent the shared CLI-form UA applies. Refresh shares `commonHeaders`
+ * but never this override, so the two paths cannot drift into each other.
+ */
+function chatHeaders(credential: WorkBuddyCredential, userAgent?: string): Record<string, string> {
   const headers: Record<string, string> = {
     ...commonHeaders(credential),
+    ...userAgent === undefined ? {} : { 'User-Agent': userAgent },
     'Content-Type': 'application/json',
     // 安全红线：chat 请求绝不携带 refresh token。
     ...credential.uid === '' ? { 'X-No-User-Id': '1' } : { 'X-User-Id': credential.uid },
@@ -515,6 +582,12 @@ export interface WorkBuddyCatalogFetch {
 export interface WorkBuddyUpstreamClientOptions {
   /** App-version resolver for international catalog requests; injectable for tests. */
   resolveAppVersion?: () => Promise<AppVersionInfo>
+  /**
+   * Chat-identity resolver for chat and probe requests; injectable for tests.
+   * Defaults to `client-identity.ts`'s per-region chain. Refresh, catalog, and
+   * billing never consult it — those requests keep their long-standing headers.
+   */
+  resolveChatIdentity?: (region: WorkBuddyRegion) => Promise<ChatIdentity>
 }
 
 /**
@@ -531,12 +604,15 @@ export class WorkBuddyUpstreamClient {
    * Injectable so tests never read the real filesystem.
    */
   private readonly resolveAppVersion: () => Promise<AppVersionInfo>
+  /** Chat-identity resolver; see {@link WorkBuddyUpstreamClientOptions.resolveChatIdentity}. */
+  private readonly resolveChatIdentity: (region: WorkBuddyRegion) => Promise<ChatIdentity>
 
   /** Provenance of the most recent successful catalog fetch, for the card. */
   lastCatalog: WorkBuddyCatalogFetch | undefined
 
   constructor(options: WorkBuddyUpstreamClientOptions = {}) {
     this.resolveAppVersion = options.resolveAppVersion ?? (() => resolveAppVersion())
+    this.resolveChatIdentity = options.resolveChatIdentity ?? (region => resolveChatIdentity(region))
   }
 
   /** POST the chat endpoint; a successful answer is the raw SSE response. */
@@ -545,12 +621,22 @@ export class WorkBuddyUpstreamClient {
     bodyJson: string,
     signal?: AbortSignal,
   ): Promise<WorkBuddyChatResult> {
+    const region = regionOf(credential.domain)
+    // Identity resolution must never block a message: any failure — a thrown
+    // resolver included — degrades to the desktop fallback form (built-in
+    // version, no CLI segment), never to the legacy CLI UA.
+    let userAgent: string
+    try {
+      userAgent = chatUserAgent(await this.resolveChatIdentity(region), region)
+    } catch {
+      userAgent = chatUserAgent(fallbackChatIdentity(region), region)
+    }
     let response: Response
     try {
       response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
         method: 'POST',
-        headers: { ...chatHeaders(credential), 'Authorization': `Bearer ${credential.accessToken}` },
-        body: regionOf(credential.domain) === 'global' ? prepareInternationalChatBody(bodyJson) : bodyJson,
+        headers: { ...chatHeaders(credential, userAgent), 'Authorization': `Bearer ${credential.accessToken}` },
+        body: region === 'global' ? prepareInternationalChatBody(bodyJson) : bodyJson,
         ...signal === undefined ? {} : { signal },
       })
     } catch (error: unknown) {
@@ -592,16 +678,28 @@ export class WorkBuddyUpstreamClient {
   /**
    * GET the personal model catalog.
    *
-   * Two upstream documents feed this, one per variant:
+   * Both variants read `/v3/config`, the product document the desktop product
+   * itself fetches. CN used to read `/console/enterprises/personal/models`
+   * (the console catalog) instead, and that was why its model list drifted
+   * from the desktop App's selector: the console document lags the product
+   * one, and the product roster itself churns day to day (`auto`,
+   * `kimi-k3-1`, `minimax-m3` have each appeared and disappeared within a
+   * week).
    *
-   * - CN (`workbuddy`): `/console/enterprises/personal/models`, the document
-   *   the official CLI itself consumes. Unchanged behaviour.
-   * - International (`workbuddy-ai`): `/v3/config`, the product document the
-   *   App's main process fetches. The gateway splits it by User-Agent, so this
-   *   request carries the App-shaped UA while every other request keeps the
-   *   CLI UA it has always sent.
+   * What distinguishes the two variants here is the User-Agent, not the path:
+   * the gateway splits `/v3/config` by client identity, and the split is
+   * load-bearing. A CLI-shaped UA yields the CLI's roster — the chat models
+   * this plugin serves — while an App-shaped UA yields the App's internal
+   * roster. CN keeps the CLI UA it sends for chat, so the catalog it
+   * advertises is exactly the one its own requests can use. The international
+   * variant has no CLI identity, so it keeps the App-shaped UA.
    *
-   * Both are unwrapped and classified the same way — `readEnvelope` plus
+   * Membership is the `cli` roster intersected with the usable rows (see
+   * {@link parseModelCatalog}); the promo badges the product document does
+   * not carry are merged in from a best-effort console read — see
+   * {@link fetchPromoBadges}.
+   *
+   * Responses are unwrapped and classified the same way — `readEnvelope` plus
    * `envelopeError` — so an expired session or exhausted credit is reported as
    * such rather than as a generic catalog failure.
    */
@@ -611,7 +709,7 @@ export class WorkBuddyUpstreamClient {
     // injects a resolver so tests never read the real filesystem, and calling
     // the module function directly made that seam inert.
     const appVersion = international ? await this.resolveAppVersion() : undefined
-    const response = await fetch(`${chatBase(credential)}${international ? '/v3/config' : '/console/enterprises/personal/models'}`, {
+    const response = await fetch(`${chatBase(credential)}/v3/config`, {
       headers: {
         Authorization: `Bearer ${credential.accessToken}`,
         Accept: 'application/json',
@@ -626,17 +724,21 @@ export class WorkBuddyUpstreamClient {
     })
     const envelope = await readEnvelope(response)
     if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
-    // Two catalog shapes share this path. The CN endpoint always answers with
-    // the `{code,msg,data}` wrapper; `/v3/config` has also been observed
-    // answering with the product document bare at the top level (no wrapper at
-    // all). Treating a missing `data` as an empty document turned that second
-    // shape into a spurious "no cli agent models", so a body that itself looks
-    // like a catalog (it carries models or agents) is used as the answer. A body
-    // with neither shape still falls through to the empty-parse error below.
+    // Two catalog shapes share this path. The endpoints wrap their answer in
+    // `{code,msg,data}`, but `/v3/config` has also been observed answering with
+    // the product document bare at the top level (no wrapper at all). Treating
+    // a missing `data` as an empty document turned that second shape into a
+    // spurious "no cli agent models", so a body that itself looks like a
+    // catalog (it carries models or agents) is used as the answer. A body with
+    // neither shape still falls through to the empty-parse error below.
     const data = isObject(envelope.data) ? envelope.data
       : 'models' in envelope.document || 'agents' in envelope.document ? envelope.document
       : {}
-    const models = parseModelCatalog(data, international)
+    // Promo badges exist only in the console document, so CN merges them in.
+    // The read is best-effort and separate: its failure costs the badges and
+    // never the catalog.
+    const promoBadges = international ? undefined : await this.fetchPromoBadges(credential, signal)
+    const models = parseModelCatalog(data, international, promoBadges)
     this.lastCatalog = {
       fetchedAtMs: Date.now(),
       source: international ? 'workbuddy-ai:app' : 'workbuddy:cli',
@@ -645,8 +747,80 @@ export class WorkBuddyUpstreamClient {
     return models
   }
 
-  /** POST the billing endpoint for the aggregated remaining credit. */
+  /**
+   * Read the console catalog's promotional tags, by model id.
+   *
+   * `/v3/config` carries no `badge:<label>:<color>` tags — the discount labels
+   * the cards render (`限时免费`, `夜间折扣`, …) live only in
+   * `/console/enterprises/personal/models`. Since the roster now comes from
+   * the product document, those tags are read from the console one in a
+   * second request and merged by id.
+   *
+   * Best-effort by construction: a badge is a label on a price, so failing to
+   * read this document must not fail a catalog refresh. Every failure —
+   * network, envelope, an unreadable body — returns undefined, and the models
+   * simply ship without badges.
+   */
+  private async fetchPromoBadges(
+    credential: WorkBuddyCredential,
+    signal?: AbortSignal,
+  ): Promise<ReadonlyMap<string, readonly string[]> | undefined> {
+    try {
+      const response = await fetch(`${chatBase(credential)}/console/enterprises/personal/models`, {
+        headers: {
+          Authorization: `Bearer ${credential.accessToken}`,
+          Accept: 'application/json',
+          Origin: originReferer(credential),
+          Referer: `${originReferer(credential)}/`,
+          'User-Agent': CLIENT_UA,
+        },
+        signal: signal === undefined
+          ? AbortSignal.timeout(JSON_TIMEOUT_MS)
+          : AbortSignal.any([signal, AbortSignal.timeout(JSON_TIMEOUT_MS)]),
+      })
+      if (!response.ok) return undefined
+      const envelope = await readEnvelope(response)
+      const data = isObject(envelope.data) ? envelope.data : envelope.document
+      const rawModels = Array.isArray(data['models']) ? data['models'] : []
+      const badges = new Map<string, readonly string[]>()
+      for (const model of rawModels) {
+        if (!isObject(model)) continue
+        const id = typeof model['id'] === 'string' ? model['id'] : ''
+        if (id === '') continue
+        const tags = Array.isArray(model['tags'])
+          ? model['tags'].filter((tag): tag is string =>
+            typeof tag === 'string' && tag.toLowerCase().startsWith(BADGE_PREFIX))
+          : []
+        if (tags.length > 0) badges.set(id, tags)
+      }
+      return badges.size === 0 ? undefined : badges
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * POST the billing endpoint for the aggregated remaining credit.
+   *
+   * Two upstream shapes, chosen by account type:
+   *
+   * - **CN enterprise** (`regionOf === 'cn'` and `enterpriseId` non-empty) asks
+   *   `/v2/billing/meter/get-enterprise-user-usage`, which answers with a single
+   *   cycle quota. The personal endpoint serves these accounts an empty
+   *   `Accounts` list, which the card then renders as "0 credit" — a wrong
+   *   number rather than a visible failure (issue #31).
+   * - **Everyone else** keeps the personal endpoint unchanged.
+   *
+   * The region gate is load-bearing: the enterprise endpoint is unverified for
+   * the global region, so an international credential that happens to carry an
+   * `enterpriseId` must stay on the measured personal path instead of being
+   * moved onto an unmeasured one.
+   */
   async fetchCredits(credential: WorkBuddyCredential): Promise<WorkBuddyCredits> {
+    if (regionOf(credential.domain) === 'cn'
+      && credential.enterpriseId !== undefined && credential.enterpriseId !== '') {
+      return await this.fetchEnterpriseCredits(credential)
+    }
     const now = new Date()
     const format = (date: Date): string => [
       date.getFullYear().toString().padStart(4, '0'),
@@ -708,6 +882,88 @@ export class WorkBuddyUpstreamClient {
   }
 
   /**
+   * CN enterprise credit read: a single cycle quota instead of a package list.
+   *
+   * Verified against the WorkBuddy desktop app (`app.asar`,
+   * `BackendProvider.getEnterpriseUsage` and `CloudAccountRepo.billing`): the
+   * body is an empty object and the account identity travels only in the
+   * headers. The two official call sites disagree on the field spelling
+   * (`limitNum`/`credit` vs `limit_num`/`used_num`), so both are accepted.
+   *
+   * A body carrying no recognisable quota field is a hard error rather than a
+   * zero. Rendering `0` for "we did not understand the answer" is exactly how
+   * issue #31 stayed invisible while users saw a plausible wrong number.
+   *
+   * The error names fields and types only: it reaches the browser, and the
+   * response body may describe the account's usage.
+   */
+  private async fetchEnterpriseCredits(credential: WorkBuddyCredential): Promise<WorkBuddyCredits> {
+    const response = await fetch(`${CN_BILLING_BASE}/v2/billing/meter/get-enterprise-user-usage`, {
+      method: 'POST',
+      headers: billingHeaders(credential),
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
+    })
+    const envelope = await readEnvelope(response)
+    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    // The official reader accepts the payload at `data.data`, `data`, or the
+    // envelope itself; the observed CN answer puts the fields at `data`.
+    const sources: Record<string, unknown>[] = []
+    for (const candidate of [envelope.data, envelope.document]) {
+      if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) continue
+      const record = candidate as Record<string, unknown>
+      if (typeof record['data'] === 'object' && record['data'] !== null && !Array.isArray(record['data'])) {
+        sources.push(record['data'] as Record<string, unknown>)
+      }
+      sources.push(record)
+    }
+    const numberAt = (source: Record<string, unknown>, key: string): number | undefined =>
+      typeof source[key] === 'number' ? source[key] as number : undefined
+    let limit: number | undefined
+    let used: number | undefined
+    let resetTime: string | undefined
+    for (const source of sources) {
+      const candidate = numberAt(source, 'limitNum') ?? numberAt(source, 'limit_num')
+      if (candidate === undefined) continue
+      limit = candidate
+      used = numberAt(source, 'credit') ?? numberAt(source, 'used_num')
+      if (typeof source['cycleResetTime'] === 'string' && source['cycleResetTime'] !== '') {
+        resetTime = source['cycleResetTime'] as string
+      }
+      break
+    }
+    if (limit === undefined) {
+      throw new Error(`workbuddy enterprise billing response carried no recognised quota field (expected limitNum/limit_num + credit/used_num; received ${describeShape(envelope.document)})`)
+    }
+    // `-1` is the upstream's "no cap" marker, not a balance. Carried as an
+    // explicit flag so no renderer can mistake it for a number. The used amount
+    // is not part of an uncapped reading.
+    if (limit === -1) {
+      return {
+        total: 0,
+        accounts: [{ packageName: enterprisePackageName, remain: 0, size: 0, unlimited: true }],
+        unlimited: true,
+        ...resetTime === undefined ? {} : { cycleResetTime: resetTime },
+      }
+    }
+    // A limit with no usable amount must fail rather than assume zero used.
+    // Defaulting to 0 would render a confident "full quota remaining" from a
+    // response we could not read — the same species of wrong-but-plausible
+    // number as the bug this branch exists to fix.
+    if (used === undefined) {
+      throw new Error(`workbuddy enterprise billing response carried a quota limit but no recognised usage field (expected credit/used_num alongside limitNum/limit_num; received ${describeShape(envelope.document)})`)
+    }
+    let remain = limit - used
+    if (remain < 0) remain = 0
+    return {
+      total: remain,
+      accounts: [{ packageName: enterprisePackageName, remain, size: limit }],
+      ...resetTime === undefined ? {} : { cycleResetTime: resetTime },
+    }
+  }
+
+
+  /**
    * One probe request: a real streaming chat call carrying the effort under
    * test.
    *
@@ -738,6 +994,15 @@ export class WorkBuddyUpstreamClient {
     signal: AbortSignal,
   ): Promise<ProbeAttempt> {
     const international = regionOf(credential.domain) === 'global'
+    // Same identity rule as the chat path — chat and its probe sibling must
+    // never present two different clients, and a thrown resolver degrades to
+    // the desktop fallback form exactly as in `chatStream`.
+    let userAgent: string
+    try {
+      userAgent = chatUserAgent(await this.resolveChatIdentity(international ? 'global' : 'cn'), international ? 'global' : 'cn')
+    } catch {
+      userAgent = chatUserAgent(fallbackChatIdentity(international ? 'global' : 'cn'), international ? 'global' : 'cn')
+    }
     const payload: Record<string, unknown> = {
       model,
       stream: true,
@@ -753,7 +1018,7 @@ export class WorkBuddyUpstreamClient {
     try {
       response = await fetch(`${chatBase(credential)}/v2/chat/completions`, {
         method: 'POST',
-        headers: { ...chatHeaders(credential), 'Authorization': `Bearer ${credential.accessToken}` },
+        headers: { ...chatHeaders(credential, userAgent), 'Authorization': `Bearer ${credential.accessToken}` },
         body: JSON.stringify(payload),
         signal,
       })
@@ -823,8 +1088,27 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function positive(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
 }
-/** Parse either response shape after its envelope has been checked. */
-export function parseModelCatalog(data: Record<string, unknown>, international = false): readonly WorkBuddyUpstreamModel[] {
+/**
+ * Parse either response shape after its envelope has been checked.
+ *
+ * Membership is the `cli` agent's roster, intersected with the rows that are
+ * usable: the roster is what the client identity this plugin presents is
+ * allowed to chat with, and joining rather than trusting it outright drops
+ * both ids the roster has retired and rows the document lists but cannot
+ * serve (no row, `disabled: true`, or non-positive caps all drop out here —
+ * a published-but-unservable id must never reach the picker).
+ *
+ * @param data - the unwrapped catalog/product document.
+ * @param international - whether it is the international product document, whose
+ * rows carry window objects and promotions.
+ * @param promoBadges - badge tags by model id, read from the console document,
+ * which is the only one that carries them.
+ */
+export function parseModelCatalog(
+  data: Record<string, unknown>,
+  international = false,
+  promoBadges?: ReadonlyMap<string, readonly string[]>,
+): readonly WorkBuddyUpstreamModel[] {
     const rawModels = Array.isArray(data['models']) ? data['models'] : []
     const agents = Array.isArray(data['agents']) ? data['agents'] : []
     let cliIds: readonly string[] | undefined
@@ -855,6 +1139,8 @@ export function parseModelCatalog(data: Record<string, unknown>, international =
         contextWindow: international && isObject(wrapped['contextWindow']) && positive(wrapped['contextWindow']['defaultLength'])
           ? wrapped['contextWindow']['defaultLength'] : input,
         ...(international ? {
+          ...isObject(wrapped['contextWindow']) && positive(wrapped['contextWindow']['defaultLength'])
+            ? { defaultContextWindow: wrapped['contextWindow']['defaultLength'] } : {},
           maxInputTokens: input,
           supportedContextWindows: isObject(wrapped['contextWindow']) && Array.isArray(wrapped['contextWindow']['supportedLengths'])
             ? wrapped['contextWindow']['supportedLengths'].filter(positive) : [],
@@ -863,7 +1149,7 @@ export function parseModelCatalog(data: Record<string, unknown>, international =
         maxTokens: output,
         supportsImages: wrapped['supportsImages'] === true && wrapped['disabledMultimodal'] !== true,
         ...resolveUpstreamReasoning(wrapped),
-        ...resolveUpstreamBilling(wrapped),
+        ...resolveUpstreamBilling(wrapped, promoBadges?.get(id)),
       })
     }
     const models = cliIds
@@ -1010,13 +1296,43 @@ export function prepareInternationalChatBody(source: string): string {
     return prepared
   }
   if (!isObject(body)) return prepared
+  // Region-scoped strip, deliberately *after* the shared `prepareChatBody`:
+  // the CN variant keeps its existing request behaviour — `reasoning_effort`
+  // is passed through verbatim there, including the adapter's own `off`
+  // spelling. See `dropUnsupportedEffort` below for why only this region drops it.
+  dropUnsupportedEffort(body)
   const messages = body['messages']
-  if (!Array.isArray(messages)) return prepared
+  if (!Array.isArray(messages)) return JSON.stringify(body)
   const first = messages[0]
-  if (isObject(first) && first['role'] === 'system') return prepared
+  if (isObject(first) && first['role'] === 'system') return JSON.stringify(body)
   // Unshift, so every caller-supplied message keeps its position and content.
   messages.unshift({ role: 'system', content: INTERNATIONAL_SYSTEM_PROMPT })
   return JSON.stringify(body)
+}
+
+/**
+ * Remove the adapter's own `off` effort spelling from the **international** wire.
+ *
+ * `thinkingLevelMap.off` is pinned to the literal `'off'` for models that
+ * declare `canDisableThinking`, so that the level stays selectable. pi-ai
+ * sends that value for any request carrying no explicit level, and the
+ * international endpoint rejects it on the GPT family with HTTP 400 `11133` /
+ * `extError.param === 'reasoning.effort'` (issue #49). Omission is the only
+ * form measured good on every such model; a literal `'none'` is *not* a safe
+ * substitute — accepted by the GPT-5.6 family and GLM, rejected by
+ * `gpt-6-astra`.
+ *
+ * Consequences, stated honestly: the international picker still offers Off,
+ * but selecting it now means "the field is omitted" — the model's actual
+ * behaviour is decided upstream and is *not* guaranteed to disable thinking
+ * or to match the catalog's `defaultEffort`. Declared spellings
+ * (`low`/`medium`/`high`/`xhigh`/`max`) and an explicit `none` pass through
+ * untouched. The CN variant is deliberately unaffected: its endpoint has
+ * accepted this spelling in every measurement so far, and keeping its wire
+ * unchanged is a scope decision, not a claim about that endpoint's future.
+ */
+function dropUnsupportedEffort(obj: Record<string, unknown>): void {
+  if (obj['reasoning_effort'] === 'off') delete obj['reasoning_effort']
 }
 
 /**

@@ -95,7 +95,7 @@ describe('WorkBuddy shim', () => {
     expect(response.status).toBe(200)
     const body = await response.json() as { data: { id: string }[] }
     const ids = body.data.map(model => model.id)
-    expect(ids).toContain('auto')
+    expect(ids).toContain('hy3')
     expect(ids).toContain('deepseek-v4-pro')
     // The fallback roster tracks the live `cli` agent's 16 models.
     expect(ids.length).toBe(16)
@@ -115,7 +115,7 @@ describe('WorkBuddy shim', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', authorization: `Bearer ${harness.shim.token()}` },
       body: JSON.stringify({
-        model: 'auto',
+        model: 'hy3',
         stream: false,
         messages: [{ role: 'user', content: 'hi' }],
         tool_choice: { type: 'auto' },
@@ -165,7 +165,7 @@ describe('WorkBuddy shim', () => {
     const response = await fetch(`${harness.shim.baseUrl()}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', authorization: `Bearer ${harness.shim.token()}` },
-      body: JSON.stringify({ model: 'auto', messages: [] }),
+      body: JSON.stringify({ model: 'hy3', messages: [] }),
     })
     expect(response.status).toBe(402)
     const body = await response.json() as { error: { type: string, message: string } }
@@ -225,7 +225,7 @@ describe('WorkBuddy shim', () => {
         origin: 'https://evil.com',
         'content-type': 'application/json',
       },
-      body: JSON.stringify({ model: 'auto', messages: [] }),
+      body: JSON.stringify({ model: 'hy3', messages: [] }),
     })
     expect(res.status).toBe(403)
     expect(res.body).toContain('origin_not_allowed')
@@ -249,7 +249,7 @@ describe('WorkBuddy shim', () => {
         'content-type': 'application/json',
         authorization: `Bearer ${harness.shim.token()}`,
       },
-      body: JSON.stringify({ model: 'auto', messages: [] }),
+      body: JSON.stringify({ model: 'hy3', messages: [] }),
     })
     expect(res.status).toBe(200)
   })
@@ -266,7 +266,7 @@ describe('WorkBuddy shim', () => {
         'content-type': 'text/plain',
         authorization: `Bearer ${harness.shim.token()}`,
       },
-      body: JSON.stringify({ model: 'auto', messages: [] }),
+      body: JSON.stringify({ model: 'hy3', messages: [] }),
     })
     expect(res.status).toBe(415)
     expect(res.body).toContain('unsupported_media_type')
@@ -288,7 +288,7 @@ describe('WorkBuddy shim', () => {
         host: `127.0.0.1:${port}`,
         'content-type': 'application/json',
       },
-      body: JSON.stringify({ model: 'auto', messages: [] }),
+      body: JSON.stringify({ model: 'hy3', messages: [] }),
     })
     expect(res.status).toBe(401)
     expect(res.body).toContain('unauthorized')
@@ -307,7 +307,7 @@ describe('WorkBuddy shim', () => {
         'content-type': 'application/json',
         authorization: 'Bearer not-the-real-secret',
       },
-      body: JSON.stringify({ model: 'auto', messages: [] }),
+      body: JSON.stringify({ model: 'hy3', messages: [] }),
     })
     expect(res.status).toBe(401)
     expect(harness.upstreamBodies).toHaveLength(0)

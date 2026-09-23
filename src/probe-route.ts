@@ -12,8 +12,11 @@
  *    process can write `Host: 127.0.0.1` — so a route that spends the user's
  *    credit must prove the caller was told the key.
  *
- * The route never accepts a prompt, a model id outside the live catalog, or a
- * sentinel from the browser: a probe request is assembled entirely host-side.
+ * A probe request is never accepted with a prompt, a model id outside the
+ * live catalog, or a sentinel from the browser: it is assembled entirely
+ * host-side. (Scope: the `probe` action only — `set-model-visibility`
+ * deliberately accepts a model id the current catalog no longer lists, since
+ * a hidden id is kept for when the model returns.)
  *
  * @module dsh-workbuddy-connect/probe-route
  */
@@ -47,6 +50,17 @@ export interface WorkBuddyProbeRouteOptions {
    * as authorizing an action. Requires the same in-process key as `probe`.
    */
   refresh?: () => Promise<{ state: string; reason?: string }>
+  /** Persist and apply the international context-window preference. */
+  setMaximumContextWindow?: (enabled: boolean) => Promise<{ state: string; reason?: string }>
+  /**
+   * Hide or show one model in the picker for the signed-in account. The
+   * handler refuses (with a reason, not a crash) when no account with a stable
+   * uid is in effect, when the expected account no longer matches (a stale
+   * card from before an account switch), or when the preference file cannot
+   * be written — a toggle the user pressed must never be reported as saved
+   * when it was not.
+   */
+  setModelVisibility?: (modelId: string, visible: boolean, expectedAccount: string) => Promise<{ state: string; reason?: string }>
   /**
    * Route path to mount. Defaults to the CN variant's path so existing callers
    * and tests keep their behaviour; the international variant passes its own.
@@ -103,6 +117,22 @@ function parseAction(text: string): WorkBuddyProbeAction | undefined {
   // No payload: the variant is already known from the route the request arrived
   // on, so the browser cannot ask this route to refresh a different provider.
   if (action === 'refresh') return { action: 'refresh' }
+  if (action === 'set-maximum-context-window') {
+    return typeof wrapped['enabled'] === 'boolean'
+      ? { action: 'set-maximum-context-window', enabled: wrapped['enabled'] }
+      : undefined
+  }
+  if (action === 'set-model-visibility') {
+    const model = wrapped['model']
+    const account = wrapped['account']
+    // `account` is required, not optional-with-fallback: a write that does not
+    // name the account it expects cannot be guarded, and there is no honest
+    // fallback account to assume.
+    if (typeof model !== 'string' || model.trim() === '') return undefined
+    if (typeof wrapped['visible'] !== 'boolean') return undefined
+    if (typeof account !== 'string' || account === '') return undefined
+    return { action: 'set-model-visibility', model: model.trim(), visible: wrapped['visible'], account }
+  }
   if (action === 'probe') {
     const model = wrapped['model']
     if (typeof model !== 'string' || model.trim() === '') return undefined
@@ -154,6 +184,26 @@ export function workBuddyProbeHandler(
           return
         }
         json(res, 200, await deps.refresh())
+        return
+      }
+      if (action.action === 'set-maximum-context-window') {
+        if (deps.setMaximumContextWindow === undefined) {
+          json(res, 404, { error: 'context-window-setting-not-supported' })
+          return
+        }
+        json(res, 200, await deps.setMaximumContextWindow(action.enabled === true))
+        return
+      }
+      if (action.action === 'set-model-visibility') {
+        if (deps.setModelVisibility === undefined) {
+          json(res, 404, { error: 'visibility-setting-not-supported' })
+          return
+        }
+        json(res, 200, await deps.setModelVisibility(
+          action.model as string,
+          action.visible === true,
+          action.account as string,
+        ))
         return
       }
       json(res, 200, await deps.probe(action.model as string))

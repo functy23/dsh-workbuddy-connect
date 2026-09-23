@@ -243,9 +243,10 @@ describe('catalog visibility and separation', () => {
     expect(cn).toContain('kimi-k2.8-preview')
     expect(cn).not.toContain('deepseek-v4-flash')
     expect(cn).toEqual([
-      'auto', 'hy4-preview', 'hy3', 'hy3-x', 'deepseek-v4.1-flash', 'glm-5.3',
-      'glm-5.3-flash', 'glm-5.2', 'glm-5.1', 'glm-5v-turbo', 'kimi-k3-1',
-      'kimi-k2.8-preview', 'kimi-k2.7', 'kimi-k2.6', 'minimax-m3', 'deepseek-v4-pro',
+      'hy4-preview', 'hy3', 'hy3-x', 'deepseek-v4.1-flash', 'glm-5.3',
+      'glm-5.3-flash', 'glm-5.2', 'glm-5.1', 'glm-5v-turbo', 'minimax-m3',
+      'minimax-m2.7', 'kimi-k3-1', 'kimi-k2.8-preview', 'kimi-k2.7', 'kimi-k2.6',
+      'deepseek-v4-pro',
     ])
     // International-only models must not appear in the CN roster, and vice
     // versa: the same id would otherwise carry the wrong rate and window.
@@ -292,8 +293,24 @@ describe('international catalog parsing', () => {
     // plugin actually requests under. Reporting the ceiling as the window would
     // overstate the budget.
     expect(ctx!.contextWindow).toBe(300_000)
+    expect(ctx!.defaultContextWindow).toBe(300_000)
     expect(ctx!.maxInputTokens).toBe(1_000_000)
     expect(ctx!.supportedContextWindows).toEqual([300_000, 1_000_000])
+  })
+
+  it('can switch an international catalog to its declared maximum windows', () => {
+    const catalog = new WorkBuddyCatalog(FALLBACK_WORKBUDDY_AI_MODELS)
+    expect(catalog.current().find(model => model.id === 'deepseek-v4.1-flash')?.contextWindow).toBe(300_000)
+    expect(catalog.setUseMaximumContextWindow(true)).toBe(true)
+    expect(catalog.current().find(model => model.id === 'deepseek-v4.1-flash')?.contextWindow).toBe(1_000_000)
+    expect(catalog.current().find(model => model.id === 'gpt-5.6-sol')?.contextWindow).toBe(1_000_000)
+
+    const legacyCatalog = new WorkBuddyCatalog([{
+      id: 'legacy', name: 'Legacy', contextWindow: 300_000,
+      supportedContextWindows: [300_000, 1_000_000], maxTokens: 1, supportsImages: false,
+    }])
+    legacyCatalog.setUseMaximumContextWindow(true)
+    expect(legacyCatalog.current()[0]).toMatchObject({ contextWindow: 1_000_000, defaultContextWindow: 300_000 })
   })
 
   it('does not attach international fields to the CN shape', () => {

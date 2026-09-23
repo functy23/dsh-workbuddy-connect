@@ -33,7 +33,7 @@ describe('manual probe consent and deduplication', () => {
     expect(send).not.toHaveBeenCalled()
     expect((await service.probe('glm-5.2', true)).state).toBe('ok')
     expect(send).toHaveBeenCalledTimes(2)
-    expect((await service.probe('auto')).state).toBe('unavailable')
+    expect((await service.probe('hy3')).state).toBe('unavailable')
   })
   it('does not spend twice when two conversations submit the same model', async () => {
     const { service, send } = setup()
@@ -88,7 +88,7 @@ describe('manual probe consent and deduplication', () => {
   })
   it('rejects declared and unknown models before sending', async () => {
     const { service, send } = setup()
-    expect((await service.probe('glm-5.3', true)).state).toBe('unavailable')
+    expect((await service.probe('glm-5.3-flash', true)).state).toBe('unavailable')
     expect((await service.probe('not-in-catalog', true)).state).toBe('unavailable')
     expect(send).not.toHaveBeenCalled()
   })

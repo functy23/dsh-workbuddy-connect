@@ -28,7 +28,7 @@ function tempStore(now?: () => number): { store: WorkBuddyProbeStore; path: stri
 }
 
 /** The fallback catalog's old-form row, which declares no effort set. */
-const AUTO = FALLBACK_WORKBUDDY_MODELS.find(model => model.id === 'auto') as WorkBuddyModelInfo
+const HY3 = FALLBACK_WORKBUDDY_MODELS.find(model => model.id === 'hy3') as WorkBuddyModelInfo
 /** The fallback catalog's new-form row, which declares one. */
 const GLM53 = FALLBACK_WORKBUDDY_MODELS.find(model => model.id === 'glm-5.3') as WorkBuddyModelInfo
 
@@ -37,30 +37,30 @@ const ACCOUNT = 'uid-1:ent-1'
 
 describe('fingerprintModel', () => {
   it('is stable for the same row and changes when the reasoning object changes', () => {
-    const before = fingerprintModel(AUTO)
-    expect(fingerprintModel(AUTO)).toBe(before)
+    const before = fingerprintModel(HY3)
+    expect(fingerprintModel(HY3)).toBe(before)
 
     const changed: WorkBuddyModelInfo = {
-      ...AUTO,
-      reasoning: { ...AUTO.reasoning!, defaultEffort: 'low' },
+      ...HY3,
+      reasoning: { ...HY3.reasoning!, defaultEffort: 'low' },
     }
     expect(fingerprintModel(changed)).not.toBe(before)
   })
 
   it('ignores display-only fields so a rename does not discard an observation', () => {
-    const renamed: WorkBuddyModelInfo = { ...AUTO, name: 'Auto (renamed)' }
-    expect(fingerprintModel(renamed)).toBe(fingerprintModel(AUTO))
+    const renamed: WorkBuddyModelInfo = { ...HY3, name: 'Auto (renamed)' }
+    expect(fingerprintModel(renamed)).toBe(fingerprintModel(HY3))
   })
 })
 
 describe('WorkBuddyProbeStore', () => {
   it('round-trips a record through disk', () => {
     const { store, path } = tempStore()
-    const fingerprint = fingerprintModel(AUTO)
-    store.set('auto', store.record(fingerprint, 'validating', ['low', 'high'], ACCOUNT))
+    const fingerprint = fingerprintModel(HY3)
+    store.set('hy3', store.record(fingerprint, 'validating', ['low', 'high'], ACCOUNT))
 
     const reopened = new WorkBuddyProbeStore({ path, pluginVersion: '9.9.9' })
-    const record = reopened.get('auto', fingerprint, ACCOUNT)
+    const record = reopened.get('hy3', fingerprint, ACCOUNT)
     expect(record?.validation).toBe('validating')
     expect(record?.efforts).toEqual(['low', 'high'])
     expect(record?.pluginVersion).toBe('9.9.9')
@@ -68,51 +68,51 @@ describe('WorkBuddyProbeStore', () => {
 
   it('refuses a record whose fingerprint no longer matches', () => {
     const { store } = tempStore()
-    store.set('auto', store.record(fingerprintModel(AUTO), 'validating', ['low'], ACCOUNT))
-    expect(store.get('auto', fingerprintModel(AUTO), ACCOUNT)).toBeDefined()
-    expect(store.get('auto', 'a-different-fingerprint', ACCOUNT)).toBeUndefined()
+    store.set('hy3', store.record(fingerprintModel(HY3), 'validating', ['low'], ACCOUNT))
+    expect(store.get('hy3', fingerprintModel(HY3), ACCOUNT)).toBeDefined()
+    expect(store.get('hy3', 'a-different-fingerprint', ACCOUNT)).toBeUndefined()
   })
 
   it('expires a record past the TTL', () => {
     let now = 1_000_000
     const { store } = tempStore(() => now)
-    const fingerprint = fingerprintModel(AUTO)
-    store.set('auto', store.record(fingerprint, 'validating', ['low'], ACCOUNT))
-    expect(store.get('auto', fingerprint, ACCOUNT)).toBeDefined()
+    const fingerprint = fingerprintModel(HY3)
+    store.set('hy3', store.record(fingerprint, 'validating', ['low'], ACCOUNT))
+    expect(store.get('hy3', fingerprint, ACCOUNT)).toBeDefined()
 
     now += 15 * 24 * 60 * 60 * 1000
-    expect(store.get('auto', fingerprint, ACCOUNT)).toBeUndefined()
+    expect(store.get('hy3', fingerprint, ACCOUNT)).toBeUndefined()
   })
 
   it('never stores efforts for a non-validating observation', () => {
     const { store } = tempStore()
-    const record = store.record(fingerprintModel(AUTO), 'non-validating', ['low', 'high'], ACCOUNT)
+    const record = store.record(fingerprintModel(HY3), 'non-validating', ['low', 'high'], ACCOUNT)
     expect(record.efforts).toEqual([])
   })
 
   it('does not let an unknown result erase a decisive one', () => {
     const { store } = tempStore()
-    const fingerprint = fingerprintModel(AUTO)
-    store.set('auto', store.record(fingerprint, 'validating', ['low'], ACCOUNT))
-    store.set('auto', store.record(fingerprint, 'unknown', [], ACCOUNT))
+    const fingerprint = fingerprintModel(HY3)
+    store.set('hy3', store.record(fingerprint, 'validating', ['low'], ACCOUNT))
+    store.set('hy3', store.record(fingerprint, 'unknown', [], ACCOUNT))
 
-    const kept = store.get('auto', fingerprint, ACCOUNT)
+    const kept = store.get('hy3', fingerprint, ACCOUNT)
     expect(kept?.validation).toBe('validating')
     expect(kept?.efforts).toEqual(['low'])
   })
 
   it('does let a decisive result replace a previous unknown', () => {
     const { store } = tempStore()
-    const fingerprint = fingerprintModel(AUTO)
-    store.set('auto', store.record(fingerprint, 'unknown', [], ACCOUNT))
-    store.set('auto', store.record(fingerprint, 'validating', ['high'], ACCOUNT))
-    expect(store.get('auto', fingerprint, ACCOUNT)?.efforts).toEqual(['high'])
+    const fingerprint = fingerprintModel(HY3)
+    store.set('hy3', store.record(fingerprint, 'unknown', [], ACCOUNT))
+    store.set('hy3', store.record(fingerprint, 'validating', ['high'], ACCOUNT))
+    expect(store.get('hy3', fingerprint, ACCOUNT)?.efforts).toEqual(['high'])
   })
 
   it('reads a corrupt or foreign-version file as empty rather than throwing', () => {
     const { store, path } = tempStore()
-    store.set('auto', store.record(fingerprintModel(AUTO), 'validating', ['low'], ACCOUNT))
-    expect(store.all()).toHaveProperty('auto')
+    store.set('hy3', store.record(fingerprintModel(HY3), 'validating', ['low'], ACCOUNT))
+    expect(store.all()[ACCOUNT]).toHaveProperty('hy3')
 
     // A format version this reader does not know must not be half-understood.
     const document = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
@@ -125,11 +125,55 @@ describe('WorkBuddyProbeStore', () => {
     expect(new WorkBuddyProbeStore({ path, pluginVersion: '9.9.9' }).all()).toEqual({})
   })
 
-  it('clears every record on request', () => {
+  it('reads the version-1 flat format as empty rather than half-understanding it', () => {
+    const { path } = tempStore()
+    // What v0.5.x used to write: one flat record per model, no account level.
+    writeFileSync(path, JSON.stringify({
+      version: 1,
+      records: {
+        auto: {
+          fingerprint: fingerprintModel(HY3),
+          validation: 'validating',
+          efforts: ['low'],
+          probedAtMs: Date.now(),
+          pluginVersion: '9.9.9',
+          account: ACCOUNT,
+        },
+      },
+    }))
+    const reopened = new WorkBuddyProbeStore({ path, pluginVersion: '9.9.9' })
+    expect(reopened.get('hy3', fingerprintModel(HY3), ACCOUNT)).toBeUndefined()
+    expect(reopened.all()).toEqual({})
+  })
+
+  it('keeps each account\'s record isolated and recovers it after a switch back', () => {
+    const { store, path } = tempStore()
+    const fingerprint = fingerprintModel(HY3)
+    const OTHER = 'uid-2:'
+    store.set('hy3', store.record(fingerprint, 'validating', ['low'], ACCOUNT))
+
+    // The other account sees nothing of this one's...
+    expect(store.get('hy3', fingerprint, OTHER)).toBeUndefined()
+    // ...and its own write does not clobber what this account recorded.
+    store.set('hy3', store.record(fingerprint, 'validating', ['max'], OTHER))
+    expect(store.get('hy3', fingerprint, ACCOUNT)?.efforts).toEqual(['low'])
+    expect(store.get('hy3', fingerprint, OTHER)?.efforts).toEqual(['max'])
+
+    // A→B→A through a reopen, as a restart would see it.
+    const reopened = new WorkBuddyProbeStore({ path, pluginVersion: '9.9.9' })
+    expect(reopened.get('hy3', fingerprint, OTHER)?.efforts).toEqual(['max'])
+    expect(reopened.get('hy3', fingerprint, ACCOUNT)?.efforts).toEqual(['low'])
+  })
+
+  it('clears every record of every account on request', () => {
     const { store } = tempStore()
-    store.set('auto', store.record(fingerprintModel(AUTO), 'validating', ['low'], ACCOUNT))
+    const fingerprint = fingerprintModel(HY3)
+    store.set('hy3', store.record(fingerprint, 'validating', ['low'], ACCOUNT))
+    store.set('hy3', store.record(fingerprint, 'validating', ['max'], 'uid-2:'))
     store.clear()
     expect(store.all()).toEqual({})
+    expect(store.get('hy3', fingerprint, ACCOUNT)).toBeUndefined()
+    expect(store.get('hy3', fingerprint, 'uid-2:')).toBeUndefined()
   })
 })
 
@@ -139,7 +183,7 @@ describe('WorkBuddyProbeService precedence', () => {
     const { store } = tempStore()
     const catalog = new WorkBuddyCatalog()
     if (options.stored === true) {
-      store.set('auto', store.record(fingerprintModel(AUTO), 'validating', ['low', 'high'], ACCOUNT))
+      store.set('hy3', store.record(fingerprintModel(HY3), 'validating', ['low', 'high'], ACCOUNT))
     }
     return new WorkBuddyProbeService({
       store,
@@ -159,12 +203,12 @@ describe('WorkBuddyProbeService precedence', () => {
 
   it('returns the stored observation for an undeclared model', () => {
     const probe = service({ consent: true, stored: true })
-    expect(probe.recordFor(AUTO.id)?.efforts).toEqual(['low', 'high'])
+    expect(probe.recordFor(HY3.id)?.efforts).toEqual(['low', 'high'])
   })
 
   it('refuses to probe without consent', async () => {
     const probe = service({ consent: false })
-    const status = await probe.probe('auto')
+    const status = await probe.probe('hy3')
     expect(status.state).toBe('unavailable')
     expect(status.state === 'unavailable' && status.reason).toContain('not authorized')
   })
@@ -210,20 +254,20 @@ describe('recordFor: the single judgement the card and adapter share', () => {
     const { store } = tempStore()
     const service = serviceFor(store)
     // Recorded against a fingerprint that no longer describes the row.
-    store.set('auto', store.record('stale-fingerprint', 'validating', ['low'], ACCOUNT))
-    expect(service.recordFor('auto')).toBeUndefined()
+    store.set('hy3', store.record('stale-fingerprint', 'validating', ['low'], ACCOUNT))
+    expect(service.recordFor('hy3')).toBeUndefined()
   })
 
   it('refuses an expired record even though the store still holds it', () => {
     let now = 1_000_000
     const { store } = tempStore(() => now)
     const service = serviceFor(store)
-    store.set('auto', store.record(fingerprintModel(AUTO), 'validating', ['low'], ACCOUNT))
-    expect(service.recordFor('auto')?.efforts).toEqual(['low'])
+    store.set('hy3', store.record(fingerprintModel(HY3), 'validating', ['low'], ACCOUNT))
+    expect(service.recordFor('hy3')?.efforts).toEqual(['low'])
 
     now += 15 * 24 * 60 * 60 * 1000
     // Past the TTL the card must stop reporting it, exactly as the adapter does.
-    expect(service.recordFor('auto')).toBeUndefined()
+    expect(service.recordFor('hy3')).toBeUndefined()
   })
 
   it('refuses a record for a model the catalog no longer lists', () => {

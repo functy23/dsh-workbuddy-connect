@@ -8,12 +8,23 @@
  * @module dsh-workbuddy-connect/auth
  */
 
-import { readFile, rm, stat } from 'node:fs/promises'
+import { readFile, rm } from 'node:fs/promises'
 import { homedir, release } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { regionOf } from './upstream.ts'
+import {
+  WorkBuddyAtRestKeyProvider,
+  WorkBuddyElectronPathError,
+  classifyDesktopAuthDocument,
+  keyIdsOf,
+  openAuthField,
+  reasonCodeOf,
+  unwrapDesktopAuthDocument,
+} from './desktop-credential-protection.ts'
+import type { DesktopAuthClassification, DesktopAuthFormat } from './desktop-credential-protection.ts'
+import type { WorkBuddySignedOutReasonCode } from './status-paths.ts'
 import type { WorkBuddyVariant } from './variants.ts'
 import type { WorkBuddyRefreshOutcome } from './upstream.ts'
 
@@ -45,6 +56,11 @@ export interface WorkBuddyAuthStatus {
    * Present only on `signed-out`, and never a substitute for fixing the file.
    */
   reason?: string
+  /**
+   * Machine-readable companion to {@link reason}, for callers that must branch
+   * on the cause. Never derived by matching `reason` text.
+   */
+  reasonCode?: WorkBuddySignedOutReasonCode
 }
 
 /** Constructor options; only {@link refresh} is required. */
@@ -58,6 +74,13 @@ export interface WorkBuddyStoreOptions {
   refresh: (credential: WorkBuddyCredential) => Promise<WorkBuddyRefreshOutcome>
   /** Refresh this long before actual expiry; default five minutes. */
   refreshMarginMs?: number
+  /**
+   * Resolver for WorkBuddy 5.6's at-rest protector key, needed when the
+   * desktop file stores encrypted token fields. Defaults to the real
+   * provider, which spawns the WorkBuddy Electron binary; tests stand in a
+   * stub. Structural so a store never depends on how the key is reached.
+   */
+  keyProvider?: Pick<WorkBuddyAtRestKeyProvider, 'protectorKeyFor' | 'helperPath'>
 }
 
 /** Basename of the plugin-owned credential copy inside the Harness home. */
@@ -115,9 +138,12 @@ function wslDesktopAuthCandidates(home: string): string[] {
 /**
  * Platform-default candidates for the WorkBuddy desktop app's auth file, in
  * probe order. Windows probes both AppData roots: current builds write under
- * `%LOCALAPPDATA%` (Local), older ones under `%APPDATA%` (Roaming). WSL probes
- * those same Windows locations through its mounted Windows profile before the
- * native Linux location.
+ * `%LOCALAPPDATA%` (Local), older ones under `%APPDATA%` (Roaming). Linux
+ * probes both XDG bases — most distributions write under the config home,
+ * but UOS/deepin builds write under the data home (issue #43), and probing
+ * only one silently reads a signed-in app as signed out. WSL probes those
+ * same Windows locations through its mounted Windows profile before the
+ * native Linux locations.
  */
 export function defaultDesktopAuthCandidates(): string[] {
   const home = homedir()
@@ -131,10 +157,31 @@ export function defaultDesktopAuthCandidates(): string[] {
     ]
   }
   if (process.platform === 'linux') {
-    const linux = join(home, '.config', ...DESKTOP_AUTH_RELATIVE_PATH)
-    return isWsl() ? [...wslDesktopAuthCandidates(home), linux] : [linux]
+    // An XDG override is adopted only as a non-empty absolute path; an
+    // invalid value falls back to the platform default rather than joining a
+    // relative path onto it.
+    const configHome = xdgBase('XDG_CONFIG_HOME', join(home, '.config'))
+    const dataHome = xdgBase('XDG_DATA_HOME', join(home, '.local', 'share'))
+    // Config home first, keeping the probe order existing installs hit.
+    const linux = dedupeCandidates([
+      join(configHome, ...DESKTOP_AUTH_RELATIVE_PATH),
+      join(dataHome, ...DESKTOP_AUTH_RELATIVE_PATH),
+    ])
+    return isWsl() ? dedupeCandidates([...wslDesktopAuthCandidates(home), ...linux]) : linux
   }
   return []
+}
+
+/** The XDG base directory for one env variable, or its platform default. */
+function xdgBase(envName: string, fallback: string): string {
+  const value = process.env[envName]?.trim()
+  if (value !== undefined && value !== '' && value.startsWith('/')) return value
+  return fallback
+}
+
+/** Drop duplicate candidates while keeping probe order. */
+function dedupeCandidates(candidates: readonly string[]): string[] {
+  return [...new Set(candidates)]
 }
 
 /**
@@ -145,7 +192,7 @@ export function defaultDesktopAuthCandidates(): string[] {
  * is reused verbatim and just the filename is swapped.
  */
 export function desktopAuthCandidatesFor(variant: WorkBuddyVariant): string[] {
-  return defaultDesktopAuthCandidates().map(path => join(dirname(path), variant.desktopFilename))
+  return dedupeCandidates(defaultDesktopAuthCandidates().map(path => join(dirname(path), variant.desktopFilename)))
 }
 
 /** First platform-default candidate; see {@link defaultDesktopAuthCandidates}. */
@@ -270,6 +317,7 @@ export class WorkBuddyCredentialStore {
   private readonly refresh: WorkBuddyStoreOptions['refresh']
   private readonly refreshMarginMs: number
   private readonly ownPath: string
+  private readonly keyProvider: NonNullable<WorkBuddyStoreOptions['keyProvider']>
   private desktopPathOverride: string | undefined
   private inflight: Promise<WorkBuddyCredential> | undefined
 
@@ -278,6 +326,7 @@ export class WorkBuddyCredentialStore {
     this.refresh = options.refresh
     this.refreshMarginMs = options.refreshMarginMs ?? 5 * 60 * 1000
     this.ownPath = options.ownPath ?? (options.variant ? join(resolveDshHome(), options.variant.ownFilename) : workbuddyOwnAuthPath())
+    this.keyProvider = options.keyProvider ?? new WorkBuddyAtRestKeyProvider()
     this.desktopPathOverride = options.desktopPath
   }
 
@@ -355,7 +404,8 @@ export class WorkBuddyCredentialStore {
         if (credential === undefined) continue
         const region = regionOf(credential.domain)
         if (region !== this.variant.region) {
-          throw new Error(
+          throw new WorkBuddyElectronPathError(
+            'credential-region-mismatch',
             `${this.variant.displayName} received a ${region === 'cn' ? 'WorkBuddy (CN)' : 'WorkBuddy AI'} credential`
             + ` in its ${label} (domain ${JSON.stringify(credential.domain)});`
             + ` point ${this.variant.env} at the ${this.variant.appName} sign-in, or remove the mismatched file`,
@@ -403,7 +453,7 @@ export class WorkBuddyCredentialStore {
   async status(): Promise<WorkBuddyAuthStatus> {
     try {
       const credential = await this.current()
-      if (credential === undefined) return { state: 'signed-out' }
+      if (credential === undefined) return { state: 'signed-out', reasonCode: 'no-credential' }
       return {
         state: 'signed-in',
         expiresAtMs: credential.expiresAtMs,
@@ -413,12 +463,21 @@ export class WorkBuddyCredentialStore {
         source: credential.source,
       }
     } catch (error: unknown) {
-      // A region mismatch (or an unreadable file) is a *diagnosable* signed-out
-      // state, not a silent one: the user needs the path to the file that is
-      // wrong, and which provider it actually belongs to. Reported as a status
-      // rather than thrown, because `status()` is documented never to throw and
-      // the card renders `reason` verbatim.
-      return { state: 'signed-out', reason: error instanceof Error ? error.message : String(error) }
+      // A region mismatch (or an unreadable file, or an unusable key helper) is
+      // a *diagnosable* signed-out state, not a silent one: the user needs the
+      // path to the file that is wrong, and which provider it actually belongs
+      // to. Reported as a status rather than thrown, because `status()` is
+      // documented never to throw and the card renders `reason` verbatim.
+      //
+      // The code travels beside the prose so the card can branch on the cause
+      // without ever matching the message text.
+      return {
+        state: 'signed-out',
+        reason: error instanceof Error ? error.message : String(error),
+        ...reasonCodeOf(error) === undefined
+          ? {}
+          : { reasonCode: reasonCodeOf(error) as WorkBuddySignedOutReasonCode },
+      }
     }
   }
 
@@ -475,16 +534,81 @@ export class WorkBuddyCredentialStore {
    * (ENOENT) falls through to the next candidate; a file that is present
    * but unparsable is authoritative for its slot, so a stale older-version
    * file never silently wins over a broken newer one.
+   *
+   * Since WorkBuddy 5.6 the token fields may arrive in at-rest envelopes, so
+   * the text is classified before the regular parser sees it. An encrypted
+   * document must be *opened*, never skipped; an unrecognized one must fail
+   * loudly. The desktop file, as long as it exists, is the identity
+   * authority — a document this plugin cannot read must surface as a
+   * diagnosis rather than be papered over by the plugin-owned copy, which
+   * belongs to whatever account was signed in when it was last refreshed.
+   * Only an absent (or empty) file lets the probe continue.
    */
   private async readDesktop(): Promise<WorkBuddyCredential | undefined> {
     for (const desktopPath of this.resolveDesktopCandidates()) {
+      let text: string
       try {
-        return parseWorkBuddyAuth(await readFile(desktopPath, 'utf8'))
+        text = await readFile(desktopPath, 'utf8')
       } catch (error: unknown) {
         if (!isENOENT(error)) throw error
+        continue
       }
+      const classification = classifyDesktopAuthDocument(text)
+      if (classification.format === 'plaintext') return parseWorkBuddyAuth(text)
+      if (classification.format === 'absent') continue
+      if (classification.format === 'unrecognized') {
+        throw new Error(
+          `the desktop auth file at ${desktopPath} exists but is unreadable`
+          + ' (neither a plaintext credential nor a decodable WorkBuddy 5.6 envelope);'
+          + ' fix or remove the file — it outranks the plugin-owned credential copy',
+        )
+      }
+      return await this.openEncryptedDesktop(classification)
     }
     return undefined
+  }
+
+  /** Open a 5.6 encrypted desktop document into the regular credential shape. */
+  private async openEncryptedDesktop(
+    classification: Extract<DesktopAuthClassification, { format: 'encrypted' }>,
+  ): Promise<WorkBuddyCredential | undefined> {
+    const wrapped = classification.wrapped
+    const key = await this.keyProvider.protectorKeyFor(keyIdsOf(wrapped.fields))
+    const text = unwrapDesktopAuthDocument(classification, field => {
+      const plaintext = openAuthField(key, field.envelope)
+      if (plaintext === undefined) {
+        throw new WorkBuddyElectronPathError(
+          'encrypted-credential-unreadable',
+          `the encrypted desktop credential's ${field.field} could not be decrypted`
+          + ` (envelope key id ${field.envelope.keyId});`
+          + ' the WorkBuddy app may hold a different at-rest key — open it once to reseal the sign-in',
+        )
+      }
+      return plaintext
+    })
+    return parseWorkBuddyAuth(text)
+  }
+
+  /**
+   * Classify the first desktop candidate that exists and carries content;
+   * `absent` when none does. An empty first file is skipped so it cannot mask
+   * a real document on the next candidate. Diagnostics only — it never spawns
+   * the key helper and never decrypts, so doctor can describe the file
+   * without attempting the unlock.
+   */
+  async desktopAuthFormat(): Promise<DesktopAuthFormat> {
+    for (const desktopPath of this.resolveDesktopCandidates()) {
+      let text: string
+      try {
+        text = await readFile(desktopPath, 'utf8')
+      } catch (error: unknown) {
+        if (!isENOENT(error)) throw error
+        continue
+      }
+      const format = classifyDesktopAuthDocument(text).format
+      if (format !== 'absent') return format
+    }
+    return 'absent'
   }
 
   private async readOwn(): Promise<WorkBuddyCredential | undefined> {
@@ -496,15 +620,31 @@ export class WorkBuddyCredentialStore {
     }
   }
 
+  /**
+   * The first desktop candidate the probe would actually read from; `undefined`
+   * when none qualifies. Semantics deliberately match the probe: empty files
+   * are skipped (the probe classifies them as absent and moves on), so on an
+   * XDG layout where the config-home file is empty but the data-home file
+   * holds the credential, diagnostics name the *data-home* file — the one
+   * authentication really uses. Like the probe it never parses or decrypts.
+   */
+  async resolvedDesktopAuthPath(): Promise<string | undefined> {
+    for (const desktopPath of this.resolveDesktopCandidates()) {
+      let text: string
+      try {
+        text = await readFile(desktopPath, 'utf8')
+      } catch (error: unknown) {
+        if (!isENOENT(error)) throw error
+        continue
+      }
+      if (text.trim() === '') continue
+      return desktopPath
+    }
+    return undefined
+  }
+
   /** Whether any desktop-file candidate exists as a regular file; diagnostics only. */
   async desktopFilePresent(): Promise<boolean> {
-    for (const desktopPath of this.resolveDesktopCandidates()) {
-      try {
-        if ((await stat(desktopPath)).isFile()) return true
-      } catch {
-        // absent or not a regular file — try the next candidate
-      }
-    }
-    return false
+    return await this.resolvedDesktopAuthPath() !== undefined
   }
 }

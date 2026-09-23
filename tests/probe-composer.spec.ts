@@ -117,6 +117,39 @@ describe('Composer model probe', () => {
     expect(view?.toJSON()).toBeNull()
   })
 
+  it('keeps the newer status when an older reconcile returns late', async () => {
+    const oldStatus = {
+      status: 'signed-in',
+      probeKey: 'test-key',
+      probe: { consent: true, running: false, candidates: [], results: [] },
+    }
+    let statusReads = 0
+    let resolveFirst: ((value: Record<string, unknown>) => void) | undefined
+    request.mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        return { ok: true, json: async () => ({ accepted: true }) }
+      }
+      if (statusReads++ === 0) {
+        const value = await new Promise<Record<string, unknown>>((resolve) => {
+          resolveFirst = resolve
+        })
+        return { ok: true, json: async () => value }
+      }
+      return { ok: true, json: async () => statusBody }
+    })
+
+    await mount()
+    await act(async () => {
+      for (const handler of focusHandlers) handler()
+    })
+    expect(button()[0]!.props['aria-label']).toBe(en.probeTooltipIdle.replace('{model}', 'glm-5.2'))
+
+    await act(async () => {
+      resolveFirst!(oldStatus)
+    })
+    expect(button()[0]!.props['aria-label']).toBe(en.probeTooltipIdle.replace('{model}', 'glm-5.2'))
+  })
+
   it('shows a static feature label that never carries state', async () => {
     await mount()
     expect(JSON.stringify(view!.toJSON())).toContain(en.probeLabel)

@@ -1,66 +1,231 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { apply, PANEL_ID } from '../src/client/index.tsx'
 
 /**
- * The client entry degrades a slot-API breaking change (the rc.6→rc.7
- * `id`→`key` rename that caused the red "Failed to load plugins" banner)
- * to a console.error, so the host provider keeps working without a banner.
+ * Per-contribution error isolation of the REAL client entry.
  *
- * We cannot import the real client entry (it pulls browser-only DSH client
- * packages); instead we replicate the exact try/catch shape from
- * `src/client/index.tsx` and assert it swallows a simulated throw.
+ * Every browser-side contribution is guarded at both boundaries where it can
+ * throw — the eager `ctx.slots.inject(...)` call and the deferred callback the
+ * slot runtime invokes later — so one failing registration never takes the
+ * others with it, and nothing ever throws into the DSH loader (the red
+ * "Failed to load plugins" banner). These specs drive the real `apply()`
+ * directly: its only runtime imports are React and local modules (every DSH
+ * import is type-only and erased), so unlike the old hand-copied mirror there
+ * is no drift risk between this spec and the implementation.
  *
- * DRIFT WARNING: the `apply()` below is a manual mirror of the real
- * `apply()` in `src/client/index.tsx` (see the NOTE on that function). It is
- * NOT the product code, so this test only proves the fallback idea works — it
- * cannot detect a regression in the real entry. If you change the real
- * `apply()`'s guarded body or its `console.error` message, update the mirror
- * here too; a mismatch between the two is invisible to this test.
+ * The fake context simulates a host whose slots are all already declared, so
+ * each `ctx.slots.inject(name, cb)` runs `cb` synchronously — exercising both
+ * guarded boundaries in one pass. Failure injection happens at the register
+ * or inject call, matching where a slot-API breakage or a bad registration
+ * actually throws.
  */
-describe('client card fallback', () => {
-  it('swallows a slot registration failure instead of throwing', () => {
-    const errors: unknown[] = []
-    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { errors.push(args) })
 
-    // Simulate a DSH loader that throws on ctx.slots.inject (the rc.7
-    // "requires options.key" error). Loose `any` on purpose: we only test
-    // the try/catch boundary, not the DSH client API types.
-    const fakeCtx: any = {
-      effect: () => {},
-      locale: { register: () => () => {}, bind: () => () => '' },
-      slots: {
-        inject: () => { throw new Error('keyed slot "settings.plugin.item" requires options.key') },
+/** One registration the fake slot registry accepted: slot name and key/id. */
+interface RecordedRegistration {
+  name: string
+  key?: string
+  id?: string
+}
+
+/** Everything a driven `apply()` did, for assertions. */
+interface Harness {
+  ctx: any
+  /** Slot names passed to `ctx.slots.inject`, in call order. */
+  injectedSlots: string[]
+  /** Accepted registrations, in order. */
+  registered: RecordedRegistration[]
+  /** Whether the `modelDirectories` scope was entered. */
+  enteredModelDirectories: () => boolean
+  /** Captured console.error arguments, one entry per degraded contribution. */
+  errors: unknown[][]
+}
+
+/** Which slot declarations exist, so the inject callbacks fire (and register). */
+const ALL_SLOTS = ['settings.section', 'sidebar.footer.action', 'main', 'conversation.session.header.utilities', 'conversation.input.right']
+
+/**
+ * Build the fake host context. `failInject` throws from a `ctx.slots.inject`
+ * call for a slot name; `failRegister` throws from the deferred
+ * `ctx.slots.register` for a slot name; `failLocale` throws from the locale
+ * registration.
+ */
+function harness(options: {
+  failInject?: (name: string) => string | undefined
+  failRegister?: (name: string, key?: string, id?: string) => string | undefined
+  failLocale?: boolean
+  declared?: readonly string[]
+} = {}): Harness {
+  const declared = new Set(options.declared ?? ALL_SLOTS)
+  const injectedSlots: string[] = []
+  const registered: RecordedRegistration[] = []
+  const errors: unknown[][] = []
+  let enteredModelDirectories = false
+  vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { errors.push(args) })
+
+  const slots: any = {
+    inject: (name: string, callback: () => void) => {
+      const failure = options.failInject?.(name)
+      if (failure !== undefined) throw new Error(failure)
+      injectedSlots.push(name)
+      if (declared.has(name)) callback()
+    },
+    register: (slotOptions: any) => {
+      const failure = options.failRegister?.(slotOptions.name, slotOptions.key, slotOptions.id)
+      if (failure !== undefined) throw new Error(failure)
+      // Only the addressing field the slot actually used is recorded: a keyed
+      // slot carries `key`, a list slot carries `id`, and recording both would
+      // put an `undefined` in every fixture for no assertion's benefit.
+      registered.push({
+        name: slotOptions.name,
+        ...slotOptions.key === undefined ? {} : { key: slotOptions.key },
+        ...slotOptions.id === undefined ? {} : { id: slotOptions.id },
+      })
+    },
+  }
+
+  const layout = { selectPanel: (): void => {} }
+  const ctx: any = {
+    // The footer card is gated on the `layout` service, which the fake host
+    // mounts; the reflective `ctx.get('layout')` is how the entry reads it.
+    get: (name: string) => (name === 'layout' ? layout : undefined),
+    effect: (fn: () => unknown) => { fn(); return () => {} },
+    locale: {
+      register: () => {
+        if (options.failLocale === true) throw new Error('locale service is broken')
+        return () => {}
       },
-    }
-
-    // Mirror of src/client/index.tsx apply() body.
-    function apply(ctx: any): void {
-      try {
-        const namespace = 'settings.workbuddy'
-        ctx.effect(() => ctx.locale.register(namespace, { zh: {}, en: {} }), 'dsh-workbuddy-connect: settings copy')
-        const t = ctx.locale.bind(namespace)
-        ctx.slots.inject('settings.plugin.item', () => {
-          throw new Error('not reached')
-        })
-        void t
-        ctx.inject(['modelDirectories'], (scope: any) => {
-          scope.slots.inject('conversation.input.right', () => {
-            throw new Error('not reached')
-          })
-        })
-      } catch (error: unknown) {
-        console.error('[dsh-workbuddy-connect] client card failed to load (host provider unaffected):', error)
+      bind: () => (key: string) => key,
+    },
+    slots,
+    inject: (names: string[], callback: (scope: any) => void) => {
+      // Each contribution's scoped inject gets the services it named: the
+      // probe seat asks for `modelDirectories`, the sidebar card for
+      // `layout`. A scope that answered a service it was not asked for would
+      // hide exactly the wiring these tests exist to pin.
+      if (names.includes('layout')) {
+        callback({ slots, get: (name: string) => (name === 'layout' ? layout : undefined) })
       }
-    }
+      if (names.includes('modelDirectories')) {
+        enteredModelDirectories = true
+        callback({
+          modelDirectories: { directoryFor: () => ({ store: {} }) },
+          slots,
+        })
+      }
+    },
+  }
 
-    // Must not throw — the whole point of the fallback.
-    expect(() => apply(fakeCtx)).not.toThrow()
+  return {
+    ctx,
+    injectedSlots,
+    registered,
+    enteredModelDirectories: () => enteredModelDirectories,
+    errors,
+  }
+}
 
-    // The error is visible in the console for developers.
-    expect(errors).toHaveLength(1)
-    expect(String(errors[0])).toContain('client card failed to load')
-    expect(String(errors[0])).toContain('requires options.key')
+/**
+ * The registrations a fully successful `apply()` makes, in order: the dashboard
+ * cell, its sidebar card, the settings page, the floating window, and the
+ * composer probe.
+ */
+const ALL_REGISTRATIONS: RecordedRegistration[] = [
+  { name: 'main', key: PANEL_ID },
+  { name: 'sidebar.footer.action', id: PANEL_ID },
+  { name: 'settings.section', id: 'dsh-workbuddy' },
+  { name: 'conversation.session.header.utilities', id: 'workbuddy-floating-accounts' },
+  { name: 'conversation.input.right', id: 'workbuddy-probe' },
+]
 
-    spy.mockRestore()
+/** Every slot `apply()` injects into, in call order. */
+const ALL_INJECTED = [
+  'main', 'sidebar.footer.action', 'settings.section',
+  'conversation.session.header.utilities', 'conversation.input.right',
+]
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+describe('client contribution isolation', () => {
+  it('registers every contribution on a healthy host', () => {
+    const h = harness()
+    expect(() => apply(h.ctx)).not.toThrow()
+    expect(h.registered).toEqual(ALL_REGISTRATIONS)
+    expect(h.injectedSlots).toEqual(ALL_INJECTED)
+    expect(h.enteredModelDirectories()).toBe(true)
+    expect(h.errors).toHaveLength(0)
+  })
+
+  it('keeps every other surface when the dashboard cell registration throws', () => {
+    // The deferred register for the `main` cell breaks (e.g. the key
+    // collides); the isolation contract: the sidebar card, the settings page,
+    // the floating window, and the probe control all still register.
+    const h = harness({ failRegister: name => name === 'main'
+      ? 'keyed slot already has an entry for key workbuddy-panel'
+      : undefined })
+    expect(() => apply(h.ctx)).not.toThrow()
+    expect(h.registered).toEqual([
+      { name: 'sidebar.footer.action', id: PANEL_ID },
+      { name: 'settings.section', id: 'dsh-workbuddy' },
+      { name: 'conversation.session.header.utilities', id: 'workbuddy-floating-accounts' },
+      { name: 'conversation.input.right', id: 'workbuddy-probe' },
+    ])
+    expect(h.errors).toHaveLength(1)
+    expect(String(h.errors[0])).toContain('dashboard panel')
+    expect(String(h.errors[0])).toContain('host provider unaffected')
+  })
+
+  it('keeps the probe control when the settings page registration throws', () => {
+    const h = harness({ failRegister: name => name === 'settings.section'
+      ? 'list slot "settings.section" already has an entry with id "dsh-workbuddy"'
+      : undefined })
+    expect(() => apply(h.ctx)).not.toThrow()
+    expect(h.registered).toEqual([
+      { name: 'main', key: PANEL_ID },
+      { name: 'sidebar.footer.action', id: PANEL_ID },
+      { name: 'conversation.session.header.utilities', id: 'workbuddy-floating-accounts' },
+      { name: 'conversation.input.right', id: 'workbuddy-probe' },
+    ])
+    expect(h.errors).toHaveLength(1)
+    expect(String(h.errors[0])).toContain('settings section')
+  })
+
+  it('keeps every other surface when the probe contribution throws', () => {
+    // The probe seat's slots.inject itself breaks — inside the
+    // modelDirectories scope, i.e. the deferred half of that contribution.
+    const h = harness({ failInject: name => name === 'conversation.input.right'
+      ? 'slot conversation.input.right is not declared'
+      : undefined })
+    expect(() => apply(h.ctx)).not.toThrow()
+    expect(h.registered).toEqual(ALL_REGISTRATIONS.slice(0, 4))
+    expect(h.enteredModelDirectories()).toBe(true)
+    expect(h.errors).toHaveLength(1)
+    expect(String(h.errors[0])).toContain('conversation probe control')
+  })
+
+  it('keeps every other contribution when the locale registration throws', () => {
+    // TWO namespaces are registered — the settings page's copy and the
+    // dashboard's — so a broken locale service degrades each independently and
+    // every slot registration still lands.
+    const h = harness({ failLocale: true })
+    expect(() => apply(h.ctx)).not.toThrow()
+    expect(h.registered).toEqual(ALL_REGISTRATIONS)
+    expect(h.errors).toHaveLength(2)
+    expect(String(h.errors[0])).toContain('settings copy')
+    expect(String(h.errors[1])).toContain('panel copy')
+  })
+
+  it('degrades every contribution independently under a total slot-API breakage', () => {
+    // The rc.6→rc.7-style API break: every slots.inject throws. Each
+    // contribution logs its own degradation, none rethrows into the loader,
+    // and the locale copy still lands.
+    const h = harness({ failInject: () => 'slots.inject is not a function' })
+    expect(() => apply(h.ctx)).not.toThrow()
+    expect(h.registered).toEqual([])
+    expect(h.injectedSlots).toEqual([])
+    expect(h.enteredModelDirectories()).toBe(true)
+    expect(h.errors).toHaveLength(5)
   })
 })

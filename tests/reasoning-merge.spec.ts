@@ -91,13 +91,13 @@ describe('probe results merged into the provider', () => {
   it('leaves an undeclared model without a control when nothing was observed', async () => {
     const ctx = await boot({})
     // `auto` is the old-form shape: no declared set, no observation.
-    expect(await effortsFor(ctx, 'auto')).toBeUndefined()
+    expect(await effortsFor(ctx, 'hy3')).toBeUndefined()
     void ctx.fiber.dispose()
   })
 
   it('grants exactly the verified spellings for a validating observation', async () => {
     const ctx = await boot({
-      model: 'auto',
+      model: 'hy3',
       record: fingerprint => ({
         fingerprint,
         validation: 'validating',
@@ -107,7 +107,7 @@ describe('probe results merged into the provider', () => {
         account: ACCOUNT,
       }),
     })
-    const efforts = await effortsFor(ctx, 'auto')
+    const efforts = await effortsFor(ctx, 'hy3')
     expect(efforts).toEqual(['high', 'low'])
     // `off` is never conferred by probing, even though the picker knows the level.
     expect(efforts).not.toContain('off')
@@ -117,7 +117,7 @@ describe('probe results merged into the provider', () => {
 
   it('grants nothing for a non-validating observation', async () => {
     const ctx = await boot({
-      model: 'auto',
+      model: 'hy3',
       record: fingerprint => ({
         fingerprint,
         validation: 'non-validating',
@@ -127,13 +127,13 @@ describe('probe results merged into the provider', () => {
         account: ACCOUNT,
       }),
     })
-    expect(await effortsFor(ctx, 'auto')).toBeUndefined()
+    expect(await effortsFor(ctx, 'hy3')).toBeUndefined()
     void ctx.fiber.dispose()
   })
 
   it('never overrides a declared set with an observation', async () => {
     const ctx = await boot({
-      model: 'glm-5.3',
+      model: 'glm-5.3-flash',
       // Fabricate an observation that disagrees with the declaration; the
       // declared set must still win.
       record: fingerprint => ({
@@ -147,23 +147,24 @@ describe('probe results merged into the provider', () => {
     })
     // Assert against the declaration actually in force rather than a hardcoded
     // list: the live upstream refresh replaces the fallback catalog, and its
-    // declared set for this model has already drifted from the fallback's
-    // (upstream now says low/high/max where the fallback says low/high/xhigh).
+    // declared set for this model may drift. (`glm-5.3` no longer qualifies —
+    // the CN document now gives it a default effort only — so the declared-set
+    // fixture is `glm-5.3-flash`, whose low/high/max declaration is stable.)
     // The invariant under test is that the observation never adds to or
     // replaces the declared set — not which values upstream declares this week.
-    const info = WorkBuddy.FALLBACK_WORKBUDDY_MODELS.find(model => model.id === 'glm-5.3')
+    const info = WorkBuddy.FALLBACK_WORKBUDDY_MODELS.find(model => model.id === 'glm-5.3-flash')
     const declared = [...(info?.reasoning?.supportedEfforts ?? [])].sort()
     const expected = info?.reasoning?.canDisableThinking === true ? ['off', ...declared].sort() : declared
-    const efforts = await effortsFor(ctx, 'glm-5.3')
+    const efforts = await effortsFor(ctx, 'glm-5.3-flash')
     expect(efforts).toEqual(expected)
-    // `max` was in the fabricated observation; it appears only if declared.
+    // `medium` was in the fabricated observation's spirit; it appears only if declared.
     expect(efforts).not.toContain('medium')
     void ctx.fiber.dispose()
   })
 
   it('ignores an observation whose fingerprint no longer matches the catalog', async () => {
     const ctx = await boot({
-      model: 'auto',
+      model: 'hy3',
       record: () => ({
         fingerprint: 'stale-fingerprint',
         validation: 'validating',
@@ -173,7 +174,7 @@ describe('probe results merged into the provider', () => {
         account: ACCOUNT,
       }),
     })
-    expect(await effortsFor(ctx, 'auto')).toBeUndefined()
+    expect(await effortsFor(ctx, 'hy3')).toBeUndefined()
     void ctx.fiber.dispose()
   })
 })
