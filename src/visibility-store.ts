@@ -26,8 +26,7 @@
  * @module dsh-workbuddy-connect/visibility-store
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 
 /** On-disk format this reader accepts; other versions are discarded. */
@@ -119,21 +118,15 @@ export class WorkBuddyVisibilityStore {
   private load(): Record<string, SavedVisibility> {
     if (this.accounts !== undefined) return this.accounts
     const accounts: Record<string, SavedVisibility> = {}
-    if (existsSync(this.path)) {
-      try {
-        const parsed: unknown = JSON.parse(readFileSync(this.path, 'utf8'))
-        if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-          const document = parsed as Record<string, unknown>
-          const raw = document['version'] === VISIBILITY_FORMAT_VERSION ? document['accounts'] : undefined
-          if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
-            for (const [key, value] of Object.entries(raw)) {
-              if (isSaved(value)) accounts[key] = value
-            }
-          }
-        }
-      } catch {
-        // Corrupt or unreadable: treated as nothing hidden.
-      }
+    // A corrupt or unreadable file reads as nothing hidden, never as everything
+    // hidden: the failure mode of the other reading is a model list the user
+    // cannot get back without editing the file by hand.
+    const saved = readStoreDocument(this.path, VISIBILITY_FORMAT_VERSION, document => {
+      const raw = document['accounts']
+      return isJsonObject(raw) ? raw : undefined
+    })
+    for (const [key, value] of Object.entries(saved ?? {})) {
+      if (isSaved(value)) accounts[key] = value
     }
     this.accounts = accounts
     return accounts
@@ -237,11 +230,9 @@ export class WorkBuddyVisibilityStore {
   }
 
   private persist(accounts: Record<string, SavedVisibility>): void {
-    const directory = dirname(this.path)
-    if (!existsSync(directory)) mkdirSync(directory, { recursive: true })
     const document: VisibilityDocument = { version: VISIBILITY_FORMAT_VERSION, accounts }
-    const temporary = resolve(`${this.path}.tmp`)
-    writeFileSync(temporary, `${JSON.stringify(document, null, 2)}\n`, { mode: 0o600 })
-    renameSync(temporary, this.path)
+    writeStoreDocument(this.path, document)
   }
 }
+import { readStoreDocument, writeStoreDocument } from './store-file.ts'
+import { isJsonObject } from './json-value.ts'

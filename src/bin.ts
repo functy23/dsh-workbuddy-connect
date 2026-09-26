@@ -3,7 +3,7 @@
 
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { WorkBuddyCredentialStore, workbuddyOwnAuthPath } from './auth.ts'
+import { WorkBuddyCredentialStore } from './auth.ts'
 import { WorkBuddyAccountPool } from './account-pool.ts'
 import { WorkBuddyAccountService } from './account-service.ts'
 import { accountsJson, formatAccounts } from './account-cli.ts'

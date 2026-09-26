@@ -25,6 +25,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { parseJsonObject } from './json-value.ts'
 import { chatBaseForRegion, originForRegion, regionOf } from './upstream.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 import type { WorkBuddyVariant } from './variants.ts'
@@ -89,13 +90,8 @@ function optionalString(value: unknown): string | undefined {
 
 /** Parse the envelope, tolerating a non-JSON body (an edge gateway's HTML 401). */
 function parseEnvelope(text: string): Envelope | undefined {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    return undefined
-  }
-  if (!isObject(parsed)) return undefined
+  const parsed = parseJsonObject(text)
+  if (parsed === undefined) return undefined
   return {
     code: typeof parsed['code'] === 'number' ? parsed['code'] : 0,
     msg: typeof parsed['msg'] === 'string' ? parsed['msg'] : '',

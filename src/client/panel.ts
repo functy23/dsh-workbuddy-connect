@@ -18,6 +18,7 @@ import type { WorkBuddySidebarCreditStyle, WorkBuddyWebAccount, WorkBuddyWebStat
 import { WORKBUDDY_SIDEBAR_CREDIT_VISIBLE_DEFAULT } from '../status-paths.ts'
 import { CARD_VARIANTS } from './card-variants.ts'
 import type { WorkBuddyCardVariant } from './card-variants.ts'
+import { statedPreference } from './status-document.ts'
 import type { PanelKey } from './panel-copy.ts'
 import type { WorkBuddyPanelSnapshot } from './panel-store.ts'
 
@@ -276,13 +277,7 @@ export function buildPanelView(options: BuildPanelViewOptions): PanelView {
  * the default shape in place rather than blanking the card.
  */
 function creditStyleOf(snapshot: WorkBuddyPanelSnapshot): WorkBuddySidebarCreditStyle {
-  for (const product of CARD_VARIANTS) {
-    const status = snapshot.statuses[product.id]
-    if (status === undefined) continue
-    if (status.status === 'signed-in' && status.sidebarCreditStyle !== undefined) return status.sidebarCreditStyle
-    if (status.status === 'signed-out' && status.sidebarCreditStyle !== undefined) return status.sidebarCreditStyle
-  }
-  return 'remaining'
+  return statedPreference(snapshot.statuses, status => status.sidebarCreditStyle) ?? 'remaining'
 }
 
 /**
@@ -295,12 +290,8 @@ function creditStyleOf(snapshot: WorkBuddyPanelSnapshot): WorkBuddySidebarCredit
  * exactly where it was; only an explicit `false` takes it away.
  */
 function creditVisibleOf(snapshot: WorkBuddyPanelSnapshot): boolean {
-  for (const product of CARD_VARIANTS) {
-    const status = snapshot.statuses[product.id]
-    if (status === undefined || status.status === 'error') continue
-    if (status.sidebarCreditVisible !== undefined) return status.sidebarCreditVisible
-  }
-  return WORKBUDDY_SIDEBAR_CREDIT_VISIBLE_DEFAULT
+  return statedPreference(snapshot.statuses, status => status.sidebarCreditVisible)
+    ?? WORKBUDDY_SIDEBAR_CREDIT_VISIBLE_DEFAULT
 }
 /** Read one numeric stat back out of a product block. */
 function countOf(product: PanelProductView, label: PanelKey): number {

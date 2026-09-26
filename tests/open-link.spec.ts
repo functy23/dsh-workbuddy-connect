@@ -6,7 +6,7 @@
  * depends on is "either the OS was told to show this page, or the answer says
  * why not" — never a silent success.
  */
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { isOpenableLink, launcherFor, openWorkBuddyLink } from '../src/open-link.ts'
 
 /** A harness that records launches instead of making them. */

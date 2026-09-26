@@ -28,9 +28,9 @@
  * @module dsh-workbuddy-connect/account-pool
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { readStoreDocument, writeStoreDocument } from './store-file.ts'
 import type { WorkBuddyCredential } from './auth.ts'
 import type { WorkBuddyVariant } from './variants.ts'
 
@@ -775,30 +775,22 @@ export class WorkBuddyAccountPool {
   private load(): WorkBuddyAccount[] {
     if (this.accounts !== undefined) return this.accounts
     const accounts: WorkBuddyAccount[] = []
-    if (existsSync(this.path)) {
-      try {
-        const parsed: unknown = JSON.parse(readFileSync(this.path, 'utf8'))
-        if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-          const document = parsed as Record<string, unknown>
-          const raw = document['version'] === POOL_FORMAT_VERSION ? document['accounts'] : undefined
-          if (Array.isArray(raw)) {
-            const seen = new Set<string>()
-            for (const value of raw) {
-              if (!isAccount(value)) continue
-              const account = normalizeAccount(value)
-              // A duplicate identity in the file would make selection
-              // ambiguous; the first row wins and later ones are dropped.
-              if (seen.has(account.id)) continue
-              seen.add(account.id)
-              accounts.push(account)
-            }
-          }
-        }
-      } catch {
-        // Corrupt or unreadable: an empty pool. A pool that cannot be read must
-        // never take the plugin down — the desktop app's file is still read
-        // separately and re-captured on the next sweep.
-      }
+    // A corrupt or unreadable file reads as an empty pool. A pool that cannot be
+    // read must never take the plugin down — the desktop app's file is still
+    // read separately and re-captured on the next sweep.
+    const saved = readStoreDocument(this.path, POOL_FORMAT_VERSION, document => {
+      const raw = document['accounts']
+      return Array.isArray(raw) ? raw : undefined
+    })
+    const seen = new Set<string>()
+    for (const value of saved ?? []) {
+      if (!isAccount(value)) continue
+      const account = normalizeAccount(value)
+      // A duplicate identity in the file would make selection ambiguous; the
+      // first row wins and later ones are dropped.
+      if (seen.has(account.id)) continue
+      seen.add(account.id)
+      accounts.push(account)
     }
     this.accounts = accounts
     // Seeded from the rows so a restart cannot hand out a stamp older than one
@@ -809,13 +801,9 @@ export class WorkBuddyAccountPool {
   }
 
   private persist(): void {
-    const directory = dirname(this.path)
     try {
-      if (!existsSync(directory)) mkdirSync(directory, { recursive: true })
       const document: PoolDocument = { version: POOL_FORMAT_VERSION, accounts: this.load() }
-      const temporary = resolve(`${this.path}.tmp`)
-      writeFileSync(temporary, `${JSON.stringify(document, null, 2)}\n`, { mode: 0o600 })
-      renameSync(temporary, this.path)
+      writeStoreDocument(this.path, document)
     } catch {
       // See the class doc: the in-memory pool stays authoritative for this run.
     }

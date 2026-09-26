@@ -30,6 +30,7 @@ import {
   validAppVersion,
   type AppVersionInfo,
 } from './app-version.ts'
+import { parseJsonObject } from './json-value.ts'
 import type { WorkBuddyRegion } from './upstream.ts'
 
 /**
@@ -90,14 +91,13 @@ function cliPackagePath(bundle: string): string {
  * token rather than guessing).
  */
 export async function readCliVersion(bundle: string): Promise<string | undefined> {
-  let document: unknown
+  let pkg: Record<string, unknown> | undefined
   try {
-    document = JSON.parse(await readFile(cliPackagePath(bundle), 'utf8'))
+    pkg = parseJsonObject(await readFile(cliPackagePath(bundle), 'utf8'))
   } catch {
     return undefined
   }
-  if (typeof document !== 'object' || document === null || Array.isArray(document)) return undefined
-  const pkg = document as Record<string, unknown>
+  if (pkg === undefined) return undefined
   const declared = pkg['version']
   if (validCliVersion(declared) && declared !== '0.0.0') return declared
   const publishConfig = pkg['publishConfig']

@@ -20,9 +20,10 @@
  * @module dsh-workbuddy-connect/catalog-store
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { readStoreDocument, writeStoreDocument } from './store-file.ts'
+import { isJsonObject } from './json-value.ts'
 import type { WorkBuddyUpstreamModel } from './upstream.ts'
 
 /** On-disk format this reader accepts; other versions are discarded. */
@@ -108,21 +109,12 @@ export class WorkBuddyCatalogStore {
   private load(): Record<string, SavedCatalog> {
     if (this.entries !== undefined) return this.entries
     const entries: Record<string, SavedCatalog> = {}
-    if (existsSync(this.path)) {
-      try {
-        const parsed: unknown = JSON.parse(readFileSync(this.path, 'utf8'))
-        if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-          const document = parsed as Record<string, unknown>
-          const raw = document['version'] === CATALOG_FORMAT_VERSION ? document['entries'] : undefined
-          if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
-            for (const [key, value] of Object.entries(raw)) {
-              if (isSaved(value)) entries[key] = value
-            }
-          }
-        }
-      } catch {
-        // Corrupt or unreadable: treated as nothing saved.
-      }
+    const saved = readStoreDocument(this.path, CATALOG_FORMAT_VERSION, document => {
+      const raw = document['entries']
+      return isJsonObject(raw) ? raw : undefined
+    })
+    for (const [key, value] of Object.entries(saved ?? {})) {
+      if (isSaved(value)) entries[key] = value
     }
     this.entries = entries
     return entries
@@ -155,13 +147,9 @@ export class WorkBuddyCatalogStore {
   }
 
   private persist(): void {
-    const directory = dirname(this.path)
     try {
-      if (!existsSync(directory)) mkdirSync(directory, { recursive: true })
       const document: CatalogDocument = { version: CATALOG_FORMAT_VERSION, entries: this.load() }
-      const temporary = resolve(`${this.path}.tmp`)
-      writeFileSync(temporary, `${JSON.stringify(document, null, 2)}\n`, { mode: 0o600 })
-      renameSync(temporary, this.path)
+      writeStoreDocument(this.path, document)
     } catch {
       // See set(): the served catalog does not depend on this write.
     }

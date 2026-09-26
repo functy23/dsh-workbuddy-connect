@@ -11,8 +11,6 @@ import {
   reasonCodeOf,
 } from '../src/desktop-credential-protection.ts'
 import type { WorkBuddyDiscoveryTools } from '../src/desktop-credential-protection.ts'
-import { WorkBuddyCredentialStore } from '../src/auth.ts'
-import { CN_VARIANT, AI_VARIANT } from '../src/variants.ts'
 
 /**
  * Issue #48: the macOS Electron binary is no longer assumed to live at
@@ -474,69 +472,3 @@ describe('#48 a failed discovery is retried, a successful one is cached', () => 
   })
 })
 
-describe('#48 discovery failures reach the status document as reasonCode', () => {
-  it('carries electron-binary-not-found through store.status()', async () => {
-    const store = new WorkBuddyCredentialStore({
-      variant: CN_VARIANT,
-      desktopPath: join(root, 'workbuddy-desktop.info'),
-      ownPath: join(root, 'own.json'),
-      refresh: async credential => ({ accessToken: credential.accessToken }),
-      keyProvider: new WorkBuddyAtRestKeyProvider({
-        discovery: 'macos-workbuddy',
-        defaultElectronPath: join(root, 'absent', 'Electron'),
-        tools: fakeTools({ findApps: async () => [] }),
-      }),
-    })
-    await writeFile(join(root, 'workbuddy-desktop.info'), encryptedEnvelopeFixture())
-    const status = await store.status()
-    expect(status.state).toBe('signed-out')
-    expect(status.reasonCode).toBe('electron-binary-not-found')
-  })
-
-  it('carries electron-binary-unavailable for the international variant', async () => {
-    const store = new WorkBuddyCredentialStore({
-      variant: AI_VARIANT,
-      desktopPath: join(root, 'workbuddy-desktop-ai.info'),
-      ownPath: join(root, 'own-ai.json'),
-      refresh: async credential => ({ accessToken: credential.accessToken }),
-      keyProvider: new WorkBuddyAtRestKeyProvider({ discovery: 'none' }),
-    })
-    await writeFile(join(root, 'workbuddy-desktop-ai.info'), encryptedEnvelopeFixture())
-    const status = await store.status()
-    expect(status.state).toBe('signed-out')
-    // Not `not-found`: nothing was searched, and claiming otherwise would send
-    // the user looking for a problem that does not exist.
-    expect(status.reasonCode).toBe('electron-binary-unavailable')
-  })
-
-  it('reports no-credential when there is simply no sign-in', async () => {
-    const store = new WorkBuddyCredentialStore({
-      variant: CN_VARIANT,
-      desktopPath: join(root, 'missing.info'),
-      ownPath: join(root, 'own.json'),
-      refresh: async credential => ({ accessToken: credential.accessToken }),
-    })
-    expect(await store.status()).toEqual({ state: 'signed-out', reasonCode: 'no-credential' })
-  })
-})
-
-/** A minimal 5.6-style encrypted document; the key is never reachable here. */
-function encryptedEnvelopeFixture(): string {
-  return JSON.stringify({
-    auth: {
-      accessToken: {
-        $wbEncrypted: 1,
-        envelope: Buffer.from(JSON.stringify({
-          suite: 1,
-          keyId: KEY_ID,
-          nonce: Buffer.alloc(12, 1).toString('base64'),
-          authTag: Buffer.alloc(16, 2).toString('base64'),
-          ciphertext: Buffer.alloc(24, 3).toString('base64'),
-        }), 'utf8').toString('base64'),
-      },
-      refreshToken: 'refresh-token-value',
-      uid: 'uid-1',
-      domain: 'www.workbuddy.cn',
-    },
-  })
-}

@@ -13,6 +13,7 @@ import { homedir, release } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { withFileLock, writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { parseJsonObject } from './json-value.ts'
 import { regionOf } from './upstream.ts'
 import {
   WorkBuddyAtRestKeyProvider,
@@ -20,11 +21,9 @@ import {
   classifyDesktopAuthDocument,
   keyIdsOf,
   openAuthField,
-  reasonCodeOf,
   unwrapDesktopAuthDocument,
 } from './desktop-credential-protection.ts'
 import type { DesktopAuthClassification, DesktopAuthFormat } from './desktop-credential-protection.ts'
-import type { WorkBuddySignedOutReasonCode } from './status-paths.ts'
 import type { WorkBuddyVariant } from './variants.ts'
 import type { WorkBuddyRefreshOutcome } from './upstream.ts'
 
@@ -56,11 +55,6 @@ export interface WorkBuddyAuthStatus {
    * Present only on `signed-out`, and never a substitute for fixing the file.
    */
   reason?: string
-  /**
-   * Machine-readable companion to {@link reason}, for callers that must branch
-   * on the cause. Never derived by matching `reason` text.
-   */
-  reasonCode?: WorkBuddySignedOutReasonCode
 }
 
 /** Constructor options; only {@link refresh} is required. */
@@ -217,14 +211,8 @@ function optionalString(value: unknown): string | undefined {
  * Returns undefined when the document carries no access token.
  */
 export function parseWorkBuddyAuth(text: string): WorkBuddyCredential | undefined {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    return undefined
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
-  const document = parsed as Record<string, unknown>
+  const document = parseJsonObject(text)
+  if (document === undefined) return undefined
   let auth: Record<string, unknown>
   let identity: Record<string, unknown>
   if (typeof document['auth'] === 'object' && document['auth'] !== null) {
@@ -263,14 +251,8 @@ function ownDocument(credential: WorkBuddyCredential): OwnDocument {
 
 /** Parse the plugin-owned copy; other versions and shapes are rejected. */
 function parseOwnDocument(text: string): WorkBuddyCredential | undefined {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    return undefined
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
-  const document = parsed as Record<string, unknown>
+  const document = parseJsonObject(text)
+  if (document === undefined) return undefined
   if (document['version'] !== OWN_FORMAT_VERSION) return undefined
   if (typeof document['credential'] !== 'object' || document['credential'] === null) return undefined
   // The owned copy stores the normalized credential itself (camelCase
@@ -453,7 +435,7 @@ export class WorkBuddyCredentialStore {
   async status(): Promise<WorkBuddyAuthStatus> {
     try {
       const credential = await this.current()
-      if (credential === undefined) return { state: 'signed-out', reasonCode: 'no-credential' }
+      if (credential === undefined) return { state: 'signed-out' }
       return {
         state: 'signed-in',
         expiresAtMs: credential.expiresAtMs,
@@ -467,16 +449,10 @@ export class WorkBuddyCredentialStore {
       // a *diagnosable* signed-out state, not a silent one: the user needs the
       // path to the file that is wrong, and which provider it actually belongs
       // to. Reported as a status rather than thrown, because `status()` is
-      // documented never to throw and the card renders `reason` verbatim.
-      //
-      // The code travels beside the prose so the card can branch on the cause
-      // without ever matching the message text.
+      // documented never to throw and the caller renders `reason` verbatim.
       return {
         state: 'signed-out',
         reason: error instanceof Error ? error.message : String(error),
-        ...reasonCodeOf(error) === undefined
-          ? {}
-          : { reasonCode: reasonCodeOf(error) as WorkBuddySignedOutReasonCode },
       }
     }
   }

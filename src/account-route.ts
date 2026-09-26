@@ -19,6 +19,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import { parseJsonObject } from './json-value.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { WORKBUDDY_ACCOUNT_PATH } from './status-paths.ts'
 import type { WorkBuddyAccountAction, WorkBuddyAccountResult } from './status-paths.ts'
@@ -75,14 +76,8 @@ function stringField(value: unknown): string | undefined {
 
 /** Parse and shape-check an action; unknown fields are ignored, not trusted. */
 export function parseAccountAction(text: string): WorkBuddyAccountAction | undefined {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    return undefined
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
-  const wrapped = parsed as Record<string, unknown>
+  const wrapped = parseJsonObject(text)
+  if (wrapped === undefined) return undefined
   switch (wrapped['action']) {
     case 'add': return { action: 'add' }
     case 'refresh-credits': return { action: 'refresh-credits' }

@@ -25,6 +25,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
+import { parseJsonObject } from './json-value.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { isWorkBuddySidebarCreditStyle, WORKBUDDY_PROBE_PATH } from './status-paths.ts'
 import type { WorkBuddyProbeAction, WorkBuddySidebarCreditStyle } from './status-paths.ts'
@@ -164,14 +165,8 @@ async function readBody(req: IncomingMessage): Promise<string | undefined> {
 
 /** Parse and shape-check an action; unknown fields are ignored, not trusted. */
 function parseAction(text: string): WorkBuddyProbeAction | undefined {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    return undefined
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
-  const wrapped = parsed as Record<string, unknown>
+  const wrapped = parseJsonObject(text)
+  if (wrapped === undefined) return undefined
   const action = wrapped['action']
   if (action === 'clear') return { action: 'clear' }
   // No payload: the variant is already known from the route the request arrived

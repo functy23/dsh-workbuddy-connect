@@ -465,49 +465,6 @@ export interface WorkBuddyAccountResult {
 }
 
 /**
- * Why no credential is usable, as a closed enum the browser half switches on.
- *
- * Deliberately separate from `reason`: `reason` is free text meant for a human
- * to read, so matching on it would break the moment the wording changes. This
- * is the machine-readable half, and the card uses it — never a substring of
- * `reason` — to decide whether the Agent assist block applies.
- */
-export type WorkBuddySignedOutReasonCode =
-  /** Nobody is signed in; nothing diagnosable beyond that. */
-  | 'no-credential'
-  /** A credential for the *other* product was found in this variant's file. */
-  | 'credential-region-mismatch'
-  /** An encrypted credential exists but could not be opened (wrong key, GCM failure, helper crash). */
-  | 'encrypted-credential-unreadable'
-  /** CN/macOS: discovery ran to completion and produced no usable candidate. */
-  | 'electron-binary-not-found'
-  /** CN/macOS: discovery found more than one distinct usable app. */
-  | 'electron-binary-ambiguous'
-  /** No auto-discovery for this product/platform and no explicit path configured. */
-  | 'electron-binary-unavailable'
-  /** An explicit path (option or env) is set but missing or not executable. */
-  | 'electron-path-invalid'
-  /** Discovery could not finish: tool missing, timeout, output overflow, unreadable plist. */
-  | 'electron-discovery-incomplete'
-
-/** Every reason code, for validation without trusting a wire value. */
-const SIGNED_OUT_REASON_CODES: readonly WorkBuddySignedOutReasonCode[] = [
-  'no-credential',
-  'credential-region-mismatch',
-  'encrypted-credential-unreadable',
-  'electron-binary-not-found',
-  'electron-binary-ambiguous',
-  'electron-binary-unavailable',
-  'electron-path-invalid',
-  'electron-discovery-incomplete',
-]
-
-/** Whether a value is one of the closed set of signed-out reason codes. */
-export function isWorkBuddySignedOutReasonCode(value: unknown): value is WorkBuddySignedOutReasonCode {
-  return typeof value === 'string' && (SIGNED_OUT_REASON_CODES as readonly string[]).includes(value)
-}
-
-/**
  * The two ways the sidebar card may state a product's credit.
  *
  * Declared here rather than with the host's config schema because BOTH halves
@@ -551,8 +508,6 @@ export type WorkBuddyWebStatus =
      * The card renders it in place of the generic sign-in hint.
      */
     reason?: string
-    /** Machine-readable companion to `reason`; see {@link WorkBuddySignedOutReasonCode}. */
-    reasonCode?: WorkBuddySignedOutReasonCode
     /**
      * How the sidebar should state each product's credit.
      *

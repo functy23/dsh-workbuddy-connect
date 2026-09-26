@@ -26,6 +26,7 @@ import type { ReactNode } from 'react'
 import type { WorkBuddyWebStatus } from '../status-paths.ts'
 import { CARD_VARIANTS } from './card-variants.ts'
 import type { WorkBuddyCardVariant } from './card-variants.ts'
+import { readWorkBuddyStatus } from './status-document.ts'
 import { ActionButton } from './ui-button.tsx'
 import { Badge, StatTile, StatusDot } from './ui-rows.tsx'
 import type { WorkBuddyTranslate } from './locales.ts'
@@ -90,23 +91,16 @@ export function WorkBuddyProviderCard(props: WorkBuddyProviderCardProps): ReactN
   const read = useCallback(async (signal?: AbortSignal): Promise<void> => {
     if (signal === undefined) setReading(true)
     try {
-      const response = await fetch(variant.statusPath, {
-        headers: { accept: 'application/json' },
-        credentials: 'same-origin',
-        ...signal === undefined ? {} : { signal },
-      })
-      if (!response.ok) {
-        if (mounted.current && signal?.aborted !== true) setFailed(true)
+      const result = await readWorkBuddyStatus(variant, signal)
+      if (!mounted.current || signal?.aborted === true) return
+      if (result.state !== 'read') {
+        // A card that cannot read says so quietly; the page it summarizes reports
+        // the diagnosis.
+        setFailed(true)
         return
       }
-      const next = await response.json() as WorkBuddyWebStatus
-      if (!mounted.current || signal?.aborted === true) return
-      setStatus(next)
+      setStatus(result.status)
       setFailed(false)
-    } catch {
-      // A card that cannot read says so quietly; the page it summarizes reports
-      // the diagnosis.
-      if (mounted.current && signal?.aborted !== true) setFailed(true)
     } finally {
       if (signal === undefined && mounted.current) setReading(false)
     }

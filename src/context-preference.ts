@@ -17,9 +17,10 @@
  * @module dsh-workbuddy-connect/context-preference
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { readStoreDocument, writeStoreDocument } from './store-file.ts'
+import { isJsonObject } from './json-value.ts'
 import type { WorkBuddyVariant } from './variants.ts'
 
 /** On-disk format this reader accepts; other versions are discarded. */
@@ -59,20 +60,14 @@ export class WorkBuddyContextPreference {
   /** Read the document, treating any problem as "no preferences yet". */
   private load(): Map<string, number> {
     const models = new Map<string, number>()
-    try {
-      if (!existsSync(this.path)) return models
-      const parsed: unknown = JSON.parse(readFileSync(this.path, 'utf8'))
-      if (typeof parsed !== 'object' || parsed === null) return models
-      const document = parsed as Partial<ContextDocument>
-      if (document.version !== FORMAT_VERSION || typeof document.models !== 'object' || document.models === null) {
-        return models
-      }
-      for (const [id, value] of Object.entries(document.models)) {
-        if (typeof value === 'number' && Number.isFinite(value) && value > 0) models.set(id, value)
-      }
-    } catch {
-      // A corrupt or unreadable file is not worth failing a request over; the
-      // user simply gets the upstream's default until they choose again.
+    // A corrupt or unreadable file is not worth failing a request over; the user
+    // simply gets the upstream's default until they choose again.
+    const saved = readStoreDocument(this.path, FORMAT_VERSION, document => {
+      const entries = document['models']
+      return isJsonObject(entries) ? entries : undefined
+    })
+    for (const [id, value] of Object.entries(saved ?? {})) {
+      if (typeof value === 'number' && Number.isFinite(value) && value > 0) models.set(id, value)
     }
     return models
   }
@@ -84,10 +79,7 @@ export class WorkBuddyContextPreference {
       models: Object.fromEntries(this.models),
     }
     try {
-      mkdirSync(dirname(this.path), { recursive: true })
-      const temporary = `${this.path}.${String(process.pid)}.tmp`
-      writeFileSync(temporary, JSON.stringify(document, null, 2), { encoding: 'utf8', mode: 0o600 })
-      renameSync(temporary, this.path)
+      writeStoreDocument(this.path, document)
     } catch {
       // Persisting is best-effort: the in-memory map already holds the choice,
       // so this session behaves as the user asked either way.

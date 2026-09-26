@@ -150,20 +150,17 @@ export async function workBuddyWebStatus(
     // diagnosable cause (a credential for the other product) wins over the
     // generic hint, because it names the file to fix.
     //
-    // The reason code travels beside the prose so the browser can branch on the
-    // cause without matching on wording: the credential store is the authority
-    // on *why* no credential is usable, and its answer is what decides whether
-    // the Agent-assist block applies. This branch deliberately does not run
-    // `safeMessage` on it — the store produces a short, path-only diagnosis, so
-    // any new failure path added here must keep credentials, payloads and
-    // subprocess output out of its own message.
+    // The store is the authority on *why* no credential is usable, so its
+    // answer becomes the reason line verbatim. This branch deliberately does not
+    // run `safeMessage` on it — the store produces a short, path-only
+    // diagnosis, so any new failure path added here must keep credentials,
+    // payloads and subprocess output out of its own message.
     const diagnosed = deps.emptyReason?.()
     const authStatus = deps.store === undefined ? undefined : await deps.store.status()
     return {
       status: 'signed-out',
       reason: diagnosed ?? authStatus?.reason
         ?? 'no account yet: sign in to the desktop app, or add one by QR from this card',
-      ...authStatus?.reasonCode === undefined ? {} : { reasonCode: authStatus.reasonCode },
       // The account section and the control key travel even with an empty pool.
       // They are how the pool stops being empty: the card's add-account action is
       // a write, so withholding the key until an account existed would make

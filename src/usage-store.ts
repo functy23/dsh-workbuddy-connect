@@ -30,8 +30,9 @@
  * @module dsh-workbuddy-connect/usage-store
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { readStoreDocument, writeStoreDocument } from './store-file.ts'
+import { isJsonObject, parseJsonObject } from './json-value.ts'
+import { join } from 'node:path'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 
 /** On-disk format this reader accepts; other versions are discarded. */
@@ -187,16 +188,11 @@ export async function consumeStreamUsage(
     if (!line.startsWith('data:')) return
     const payload = line.slice('data:'.length).trim()
     if (payload === '' || payload === '[DONE]') return
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(payload)
-    } catch {
-      return
-    }
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return
-    const block = (parsed as Record<string, unknown>)['usage']
-    if (typeof block !== 'object' || block === null || Array.isArray(block)) return
-    last = block as Record<string, unknown>
+    const parsed = parseJsonObject(payload)
+    if (parsed === undefined) return
+    const block = parsed['usage']
+    if (!isJsonObject(block)) return
+    last = block
     if (!announced) {
       announced = true
       onFirstBlock?.(usageFieldNames(block))
@@ -281,22 +277,14 @@ export class WorkBuddyUsageStore {
   private load(): Record<string, WorkBuddyUsageCounters> {
     if (this.accounts !== undefined) return this.accounts
     const accounts: Record<string, WorkBuddyUsageCounters> = {}
-    if (existsSync(this.path)) {
-      try {
-        const parsed: unknown = JSON.parse(readFileSync(this.path, 'utf8'))
-        if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-          const document = parsed as Record<string, unknown>
-          const raw = document['version'] === USAGE_FORMAT_VERSION ? document['accounts'] : undefined
-          if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
-            for (const [key, value] of Object.entries(raw)) {
-              if (isCounters(value)) accounts[key] = value
-            }
-          }
-        }
-      } catch {
-        // Corrupt or unreadable: treated as "nothing counted yet". The card then
-        // shows no usage rather than a wrong one.
-      }
+    // A corrupt or unreadable file reads as "nothing counted yet": the card then
+    // shows no usage rather than a wrong one.
+    const counted = readStoreDocument(this.path, USAGE_FORMAT_VERSION, document => {
+      const raw = document['accounts']
+      return isJsonObject(raw) ? raw : undefined
+    })
+    for (const [key, value] of Object.entries(counted ?? {})) {
+      if (isCounters(value)) accounts[key] = value
     }
     this.accounts = accounts
     return accounts
@@ -371,12 +359,8 @@ export class WorkBuddyUsageStore {
   flush(): void {
     if (!this.dirty) return
     try {
-      const directory = dirname(this.path)
-      if (!existsSync(directory)) mkdirSync(directory, { recursive: true })
       const document: UsageDocument = { version: USAGE_FORMAT_VERSION, accounts: this.load() }
-      const temporary = resolve(`${this.path}.tmp`)
-      writeFileSync(temporary, `${JSON.stringify(document, null, 2)}\n`, { mode: 0o600 })
-      renameSync(temporary, this.path)
+      writeStoreDocument(this.path, document)
       this.dirty = false
     } catch (error: unknown) {
       // Kept dirty on purpose: the next flush retries, and a successful one

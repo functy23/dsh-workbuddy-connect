@@ -19,6 +19,8 @@
  * @module dsh-workbuddy-connect/account-token
  */
 
+import { parseJsonObject } from './json-value.ts'
+
 /** What a pasted token says about its account. */
 export interface WorkBuddyProfile {
   /** The `sub` claim, which matches the uid the QR endpoint returns. */
@@ -61,9 +63,7 @@ export function decodeTokenPayload(token: string): Record<string, unknown> | und
     const binary = atob(padded)
     const bytes = Uint8Array.from(binary, character => character.charCodeAt(0))
     const text = new TextDecoder().decode(bytes)
-    const parsed: unknown = JSON.parse(text)
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
-    return parsed as Record<string, unknown>
+    return parseJsonObject(text)
   } catch {
     return undefined
   }

@@ -16,9 +16,10 @@
  */
 
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { readStoreDocument, writeStoreDocument } from './store-file.ts'
+import { isJsonObject } from './json-value.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import type { WorkBuddyEffort } from './upstream.ts'
 
@@ -117,21 +118,22 @@ export function fingerprintModel(info: WorkBuddyModelInfo): string {
   return createHash('sha256').update(basis).digest('hex').slice(0, 16)
 }
 
-/** Read-and-validate the documents on disk; anything malformed reads as empty. */
+/** Read-and-validate the document on disk; anything malformed reads as empty. */
 function readDocument(path: string): ProbeDocument | undefined {
-  if (!existsSync(path)) return undefined
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(readFileSync(path, 'utf8'))
-  } catch {
-    return undefined
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
-  const wrapped = parsed as Record<string, unknown>
-  if (wrapped['version'] !== PROBE_FORMAT_VERSION) return undefined
-  const records = wrapped['records']
-  if (typeof records !== 'object' || records === null || Array.isArray(records)) return undefined
-  return parsed as ProbeDocument
+  return readStoreDocument(path, PROBE_FORMAT_VERSION, document => {
+    const stored = document['records']
+    if (!isJsonObject(stored)) return undefined
+    const records: Record<string, Record<string, WorkBuddyProbeRecord>> = {}
+    for (const [account, bucket] of Object.entries(stored)) {
+      if (!isJsonObject(bucket)) continue
+      const kept: Record<string, WorkBuddyProbeRecord> = {}
+      for (const [modelId, record] of Object.entries(bucket)) {
+        if (isRecord(record)) kept[modelId] = record
+      }
+      records[account] = kept
+    }
+    return { version: PROBE_FORMAT_VERSION, records }
+  })
 }
 
 /** One record's shape check; a bad row is dropped rather than trusted. */
@@ -191,19 +193,7 @@ export class WorkBuddyProbeStore {
   }
 
   private load(): Record<string, Record<string, WorkBuddyProbeRecord>> {
-    if (this.records === undefined) {
-      const document = readDocument(this.path)
-      const records: Record<string, Record<string, WorkBuddyProbeRecord>> = {}
-      for (const [account, bucket] of Object.entries(document?.records ?? {})) {
-        if (typeof bucket !== 'object' || bucket === null || Array.isArray(bucket)) continue
-        const parsed: Record<string, WorkBuddyProbeRecord> = {}
-        for (const [modelId, record] of Object.entries(bucket)) {
-          if (isRecord(record)) parsed[modelId] = record
-        }
-        records[account] = parsed
-      }
-      this.records = records
-    }
+    this.records ??= readDocument(this.path)?.records ?? {}
     return this.records
   }
 
@@ -285,13 +275,9 @@ export class WorkBuddyProbeStore {
    * every observation.
    */
   private persist(): void {
-    const directory = dirname(this.path)
     try {
-      if (!existsSync(directory)) mkdirSync(directory, { recursive: true })
       const document: ProbeDocument = { version: PROBE_FORMAT_VERSION, records: this.load() }
-      const temporary = resolve(`${this.path}.tmp`)
-      writeFileSync(temporary, `${JSON.stringify(document, null, 2)}\n`, { mode: 0o600 })
-      renameSync(temporary, this.path)
+      writeStoreDocument(this.path, document)
     } catch {
       // A state file that cannot be written must not take the plugin down: the
       // worst case is that the observation is not remembered.

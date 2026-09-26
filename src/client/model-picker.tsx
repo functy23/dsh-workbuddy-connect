@@ -31,7 +31,7 @@ import type { ReactNode } from 'react'
 import type { WorkBuddyWebModelBadge } from '../status-paths.ts'
 import { buildModelSelectOptions, groupModelSelectOptions, toggleModelSelection } from './model-select.ts'
 import type { SelectableModel } from './model-select.ts'
-import type { WorkBuddySettingsKey, WorkBuddyTranslate } from './locales.ts'
+import type { WorkBuddySettingsKey } from './locales.ts'
 
 /** The translator shape this module needs; the page passes its own bound one. */
 export type ModelPickerTranslate = (key: WorkBuddySettingsKey, params?: Record<string, unknown>) => string

@@ -24,11 +24,11 @@
  * @module dsh-workbuddy-connect/desktop-credential-protection
  */
 
+import { isJsonObject, parseJsonObject } from './json-value.ts'
 import { execFile } from 'node:child_process'
 import { accessSync, constants, realpathSync, statSync } from 'node:fs'
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
 import { join } from 'node:path'
-import type { WorkBuddySignedOutReasonCode } from './status-paths.ts'
 
 /** The four states a desktop auth document can be read as. */
 export type DesktopAuthFormat = 'absent' | 'plaintext' | 'encrypted' | 'unrecognized'
@@ -89,17 +89,11 @@ export function keyIdsOf(fields: readonly WrappedAuthField[]): string[] {
  * than encrypted, because no key could ever open it.
  */
 function parseWrappedField(field: 'accessToken' | 'refreshToken', value: unknown): WrappedAuthField | undefined {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
-  const wrapped = value as Record<string, unknown>
+  if (!isJsonObject(value)) return undefined
+  const wrapped = value
   if (wrapped['$wbEncrypted'] !== 1 || typeof wrapped['envelope'] !== 'string') return undefined
-  let inner: unknown
-  try {
-    inner = JSON.parse(Buffer.from(wrapped['envelope'], 'base64').toString('utf8'))
-  } catch {
-    return undefined
-  }
-  if (typeof inner !== 'object' || inner === null || Array.isArray(inner)) return undefined
-  const parts = inner as Record<string, unknown>
+  const parts = parseJsonObject(Buffer.from(wrapped['envelope'], 'base64').toString('utf8'))
+  if (parts === undefined) return undefined
   const nonce = parseBase64(parts['nonce'], 12)
   const authTag = parseBase64(parts['authTag'], 16)
   const ciphertext = parseBase64(parts['ciphertext'])
@@ -149,14 +143,8 @@ const AUTH_FIELDS = ['accessToken', 'refreshToken'] as const
  */
 export function classifyDesktopAuthDocument(text: string): DesktopAuthClassification {
   if (text.trim() === '') return { format: 'absent' }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    return { format: 'unrecognized' }
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return { format: 'unrecognized' }
-  const document = parsed as Record<string, unknown>
+  const document = parseJsonObject(text)
+  if (document === undefined) return { format: 'unrecognized' }
   const auth = typeof document['auth'] === 'object' && document['auth'] !== null
     ? document['auth'] as Record<string, unknown>
     : document
@@ -271,14 +259,8 @@ export interface WorkBuddyAtRestPayload {
  * a canonical-base64 32-byte, non-all-zero secret. `undefined` otherwise.
  */
 export function parseAtRestPayload(text: string): WorkBuddyAtRestPayload | undefined {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    return undefined
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
-  const payload = parsed as Record<string, unknown>
+  const payload = parseJsonObject(text)
+  if (payload === undefined) return undefined
   if (payload['version'] !== 1) return undefined
   const secret = payload['atRestSecretKey']
   if (typeof secret !== 'string' || secret === '') return undefined
@@ -795,14 +777,37 @@ function isExecutable(path: string): boolean {
 }
 
 /**
- * A failure the card must be able to classify. The code travels with the error
- * so the store can promote it to `reasonCode` without re-deriving the cause
- * from prose.
+ * Why the app's Electron binary could not be resolved, and why an at-rest
+ * credential could not be opened.
+ *
+ * Deliberately separate from the error's `message`: the message is free text
+ * for a human and names paths, so a caller that branches on it breaks the
+ * moment the wording changes. This is the machine-readable half.
+ */
+export type WorkBuddyDesktopFailureCode =
+  /** The credential found on disk belongs to the *other* product's region. */
+  | 'credential-region-mismatch'
+  /** An encrypted credential exists but could not be opened (wrong key, GCM failure, helper crash). */
+  | 'encrypted-credential-unreadable'
+  /** CN/macOS: discovery ran to completion and produced no usable candidate. */
+  | 'electron-binary-not-found'
+  /** CN/macOS: discovery found more than one distinct usable app. */
+  | 'electron-binary-ambiguous'
+  /** No auto-discovery for this product/platform and no explicit path configured. */
+  | 'electron-binary-unavailable'
+  /** An explicit path (option or env) is set but missing or not executable. */
+  | 'electron-path-invalid'
+  /** Discovery could not finish: tool missing, timeout, output overflow, unreadable plist. */
+  | 'electron-discovery-incomplete'
+
+/**
+ * A failure this module classifies rather than merely reports. The code travels
+ * with the error so a caller can name the cause without reading the prose.
  */
 export class WorkBuddyElectronPathError extends Error {
-  readonly reasonCode: WorkBuddySignedOutReasonCode
+  readonly reasonCode: WorkBuddyDesktopFailureCode
 
-  constructor(reasonCode: WorkBuddySignedOutReasonCode, message: string) {
+  constructor(reasonCode: WorkBuddyDesktopFailureCode, message: string) {
     super(message)
     this.name = 'WorkBuddyElectronPathError'
     this.reasonCode = reasonCode
@@ -810,7 +815,7 @@ export class WorkBuddyElectronPathError extends Error {
 }
 
 /** Read the reason code off an arbitrary thrown value, when it carries one. */
-export function reasonCodeOf(error: unknown): WorkBuddySignedOutReasonCode | undefined {
+export function reasonCodeOf(error: unknown): WorkBuddyDesktopFailureCode | undefined {
   return error instanceof WorkBuddyElectronPathError ? error.reasonCode : undefined
 }
 

@@ -7,11 +7,8 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import { FakeSettingsService } from './fake-settings.ts'
 import * as WorkBuddy from '../src/index.ts'
-import { WorkBuddyAccountPool } from '../src/account-pool.ts'
 import { WorkBuddyAccountService } from '../src/account-service.ts'
-import { WorkBuddyCredentialStore } from '../src/auth.ts'
 import { fingerprintModel } from '../src/probe-store.ts'
-import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
 
 /**
  * Catalog lifecycle: what happens across a credential change and a failed fetch.

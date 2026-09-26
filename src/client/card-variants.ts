@@ -36,13 +36,11 @@ export interface WorkBuddyCardVariant {
   /** Write endpoint that manages this variant's account pool. */
   accountPath: string
   /**
-   * The product's own name, used verbatim inside the Agent prompt. Taken from
-   * the variant rather than derived from a reason code: the two products fail
-   * in the same shapes, so nothing in the failure says which name is right.
+   * The product's own name, drawn wherever the UI has to name it rather than
+   * paraphrase it. Taken from the variant because the two products fail in the
+   * same shapes, so nothing in a failure says which name is right.
    */
   appName: string
-  /** Locale key for "no decryption program is configured" on this product. */
-  unavailableKey: WorkBuddySettingsKey
 }
 
 /** CN WorkBuddy; the plugin's long-standing product and default. */
@@ -55,7 +53,6 @@ export const CN_CARD_VARIANT: WorkBuddyCardVariant = {
   probePath: WORKBUDDY_PROBE_PATH,
   accountPath: WORKBUDDY_ACCOUNT_PATH,
   appName: 'WorkBuddy',
-  unavailableKey: 'assistUnavailableCN',
 }
 
 /** International WorkBuddy AI. */
@@ -68,7 +65,6 @@ export const AI_CARD_VARIANT: WorkBuddyCardVariant = {
   probePath: WORKBUDDY_AI_PROBE_PATH,
   accountPath: WORKBUDDY_AI_ACCOUNT_PATH,
   appName: 'WorkBuddy AI',
-  unavailableKey: 'assistUnavailableAI',
 }
 
 /** Both products, in display order. */

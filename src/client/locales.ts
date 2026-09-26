@@ -209,26 +209,6 @@ export const en = {
   accountUpdated: 'That account was already here; its sign-in was refreshed.',
   accountTestOk: 'Connected',
   accountTestFailed: 'Test failed',
-  assistantHeading: 'Let an Agent sort this out',
-  assistantIntro: 'Send the request below to your Agent; it will check the app location and the launch configuration for you.',
-  assistantCopy: 'Copy for Agent',
-  assistantCopied: 'Copied',
-  assistantCopyFailed: 'Copy failed — select the text above and copy it manually',
-  assistantAfter: 'When your Agent is done, come back and check again. If the DSH launch environment was changed, restart DSH first as instructed.',
-  assistantRecheck: 'Done — check again',
-  assistantRechecking: 'Checking…',
-  // The prompt is a request to the user's Agent, not a promise by this plugin:
-  // it must not name a specific env var (the right fix depends on how DSH was
-  // launched) and must not claim a search happened.
-  assistantPrompt: 'DSH\'s dsh-workbuddy-connect cannot use my {appName}: {failureSummary}. Please check the actual installation location and any existing path configuration, help the plugin use it correctly, and verify recovery. If the DSH launch environment must be changed or DSH restarted, give me clear steps; do not only set an environment variable temporarily in the current shell.',
-  // Per-code summaries. `unavailable*` says only that nothing is configured —
-  // never that a search was performed, because on those paths none was.
-  assistNotFound: 'no usable decryption program was found',
-  assistAmbiguous: 'more than one WorkBuddy copy was found and none could be chosen safely',
-  assistIncomplete: 'the automatic search could not be completed',
-  assistPathInvalid: 'the configured program path is not usable',
-  assistUnavailableCN: 'no decryption program is configured for this platform',
-  assistUnavailableAI: 'no decryption program is configured for WorkBuddy AI',
   // The Models-page provider card: a summary of one product's pool drawn inside
   // its row on the harness's own Models settings page.
   cardAccounts: 'Accounts',
@@ -455,21 +435,6 @@ export const zh: Record<WorkBuddySettingsKey, string> = {
   accountUpdated: '该账号已存在，已更新其登录凭证。',
   accountTestOk: '连通正常',
   accountTestFailed: '测试失败',
-  assistantHeading: '让 Agent 帮你处理',
-  assistantIntro: '把下面这段请求发给你的 Agent，它会协助检查应用位置和启动配置。',
-  assistantCopy: '复制给 Agent',
-  assistantCopied: '已复制',
-  assistantCopyFailed: '复制失败，请手动选择上方文字复制',
-  assistantAfter: 'Agent 处理完成后，回到这里重新检查；如果修改了 DSH 的启动环境，请先按指引重启 DSH。',
-  assistantRecheck: '已处理，重新检查',
-  assistantRechecking: '正在检查…',
-  assistantPrompt: 'DSH 的 dsh-workbuddy-connect 无法使用我的 {appName}：{failureSummary}。请帮我检查实际安装位置和已有路径配置，让插件能正确使用它，并验证恢复结果；如果需要修改 DSH 的启动环境或重启，请给我明确的操作步骤，不要只在当前 shell 临时设置环境变量。',
-  assistNotFound: '没有找到可用的解密程序',
-  assistAmbiguous: '找到了多个 WorkBuddy 副本，无法安全自动选择',
-  assistIncomplete: '自动定位未能完成',
-  assistPathInvalid: '指定的程序路径不可用',
-  assistUnavailableCN: '当前平台尚未配置解密程序',
-  assistUnavailableAI: '尚未配置 WorkBuddy AI 的解密程序',
   cardAccounts: '账号',
   cardModels: '模型',
   cardBenched: '搁置中',

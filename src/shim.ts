@@ -22,7 +22,7 @@ import type { WorkBuddyCredential } from './auth.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { prepareChatBody, type UpstreamErrorKind, type WorkBuddyChatResult } from './upstream.ts'
-import { readUsageBlock, usageFieldNames, type WorkBuddyRequestUsage } from './usage-store.ts'
+import { type WorkBuddyRequestUsage } from './usage-store.ts'
 
 /** Minimal logger surface the plugin context already provides. */
 export interface ShimLogger {

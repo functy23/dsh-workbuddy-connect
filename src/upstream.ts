@@ -7,6 +7,7 @@
  * @module dsh-workbuddy-connect/upstream
  */
 
+import { isJsonObject } from './json-value.ts'
 import { appUserAgent, resolveAppVersion, type AppVersionInfo } from './app-version.ts'
 import { chatUserAgent, fallbackChatIdentity, resolveChatIdentity, type ChatIdentity } from './client-identity.ts'
 import type { WorkBuddyCredential } from './auth.ts'
@@ -598,10 +599,10 @@ async function readEnvelope(response: Response): Promise<Envelope> {
   } catch {
     throw new Error(`workbuddy upstream returned non-JSON (http ${response.status}): ${text.slice(0, 160)}`)
   }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+  if (!isJsonObject(parsed)) {
     throw new Error(`workbuddy upstream returned an unexpected document (http ${response.status})`)
   }
-  const document = parsed as Record<string, unknown>
+  const document = parsed
   const envelope: Envelope = {
     code: typeof document['code'] === 'number' ? document['code'] : 0,
     msg: typeof document['msg'] === 'string' ? document['msg'] : '',

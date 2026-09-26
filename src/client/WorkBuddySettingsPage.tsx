@@ -58,6 +58,7 @@ import type {
 } from '../status-paths.ts'
 import { encodeQrCode } from './qr-code.ts'
 import { CARD_VARIANTS } from './card-variants.ts'
+import { readWorkBuddyStatus, statedPreference } from './status-document.ts'
 import { Menu } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import { openExternalLink } from './open-external.ts'
@@ -1393,28 +1394,16 @@ export function WorkBuddySettingsPage({ t, context, refreshPanel, openPanel }: W
 
   const readAll = useCallback(async (signal?: AbortSignal): Promise<void> => {
     const answers = await Promise.all(CARD_VARIANTS.map(async variant => {
-      try {
-        const response = await fetch(variant.statusPath, {
-          headers: { accept: 'application/json' },
-          credentials: 'same-origin',
-          ...signal === undefined ? {} : { signal },
-        })
-        if (!response.ok) {
-          // A failed read is kept as an ERROR document rather than dropped: the
-          // host puts its diagnosis in the body ("no WorkBuddy Electron binary is
-          // configured…"), and that sentence is the only thing that tells the
-          // user what to fix. Dropping it left every action answering "request
-          // failed" with no way to find out why.
-          const body: unknown = await response.json().catch(() => undefined)
-          const message = typeof body === 'object' && body !== null && 'error' in body
-            ? String((body as Record<string, unknown>)['error'])
-            : `HTTP ${String(response.status)}`
-          return [variant.id, { status: 'error', message } as WorkBuddyWebStatus] as const
-        }
-        return [variant.id, await response.json() as WorkBuddyWebStatus] as const
-      } catch {
-        return undefined
+      const result = await readWorkBuddyStatus(variant, signal)
+      // An unreadable read is dropped, so the previous document stays: the page
+      // keeps showing what it last knew rather than blanking over a transient
+      // failure. A refused one is kept as an ERROR document, because the host's
+      // own sentence is the only thing that tells the user what to fix.
+      if (result.state === 'unreadable') return undefined
+      if (result.state === 'refused') {
+        return [variant.id, { status: 'error', message: result.message } satisfies WorkBuddyWebStatus] as const
       }
+      return [variant.id, result.status] as const
     }))
     if (!mounted.current || signal?.aborted === true) return
     const next: Partial<Record<string, WorkBuddyWebStatus>> = {}
@@ -1938,14 +1927,8 @@ export function WorkBuddySettingsPage({ t, context, refreshPanel, openPanel }: W
    * cannot persist the preference, and the row is then not rendered at all: a
    * control that cannot be saved is worse than no control.
    */
-  const currentCreditStyle: WorkBuddySidebarCreditStyle | undefined = (() => {
-    for (const variant of CARD_VARIANTS) {
-      const status = statuses[variant.id]
-      if (status === undefined || status.status === 'error') continue
-      if (status.sidebarCreditStyle !== undefined) return status.sidebarCreditStyle
-    }
-    return undefined
-  })()
+  const currentCreditStyle: WorkBuddySidebarCreditStyle | undefined =
+    statedPreference(statuses, status => status.sidebarCreditStyle)
 
   /**
    * Whether the host says the sidebar keeps its card, when it says anything.
@@ -1957,14 +1940,8 @@ export function WorkBuddySettingsPage({ t, context, refreshPanel, openPanel }: W
    * what the sidebar draws from, and a page that second-guessed it would lie
    * about the state it is editing.
    */
-  const currentCreditVisible: boolean | undefined = (() => {
-    for (const variant of CARD_VARIANTS) {
-      const status = statuses[variant.id]
-      if (status === undefined || status.status === 'error') continue
-      if (status.sidebarCreditVisible !== undefined) return status.sidebarCreditVisible
-    }
-    return undefined
-  })()
+  const currentCreditVisible: boolean | undefined =
+    statedPreference(statuses, status => status.sidebarCreditVisible)
 
   return (
     // The reference layout: a 720px column of groups of hairline-separated rows.
