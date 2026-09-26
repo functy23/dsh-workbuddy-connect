@@ -16,10 +16,10 @@
  *    model list, reasoning probes), at the same navigation level as General /
  *    Models / Plugins.
  *
- * The conversation-side surfaces are registered the same way — the floating
- * account window rides `conversation.session.header.utilities` and the reasoning
- * probe rides `conversation.input.right` — so the plugin has no bespoke
- * mounting of its own anywhere.
+ * The conversation-side surfaces are registered the same way — the credit badge
+ * rides `conversation.composer.dock` and the reasoning probe rides
+ * `conversation.input.right` — so the plugin has no bespoke mounting of its own
+ * anywhere.
  *
  * `ctx.slots.inject` follows the slot's declaration lifetime: a callback for a
  * slot the host never declares simply never runs. That is what makes the
@@ -37,15 +37,17 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-model-selection/client'
+import { WORKBUDDY_PROFILE_ENTRY_ID } from '../status-paths.ts'
 import { CARD_VARIANTS } from './card-variants.ts'
 import { WorkBuddySettingsPage } from './WorkBuddySettingsPage.tsx'
-import { WorkBuddyFloatingAccounts } from './WorkBuddyFloatingAccounts.tsx'
 import { WorkBuddyProbeControl } from './WorkBuddyProbeControl.tsx'
+import { WorkBuddyCreditBadge } from './credit-badge.tsx'
 import { WorkBuddyFooterEntry, WorkBuddyPanel } from './panel-view.tsx'
 import type { PanelInjected } from './panel-view.tsx'
+import { WorkBuddyProviderCard } from './provider-card.tsx'
 import { createWorkBuddyPanelStore } from './panel-store.ts'
-import { PANEL_CSS, PANEL_CSS_ID } from './panel-styles.ts'
-import { PANEL_COPY_EN, PANEL_COPY_ZH, PANEL_LOCALE_NS } from './panel-copy.ts'
+import { PANEL_CSS, PANEL_CSS_ID, PAGE_CSS, PAGE_CSS_ID } from './ui-styles.ts'
+import { PANEL_COPY_EN, PANEL_COPY_ZH, PANEL_LOCALE_NS, panelTranslator } from './panel-copy.ts'
 import { en, zh } from './locales.ts'
 import type { WorkBuddySettingsKey, WorkBuddyTranslate } from './locales.ts'
 
@@ -121,17 +123,20 @@ function bindSettingsCopy(ctx: ClientContext, namespace: string): WorkBuddyTrans
 }
 
 /**
- * Inject the dashboard's stylesheet once and return its disposer, for
- * `ctx.effect` to own. Keyed by its own `data-plugin-css` id, so the injection
- * is idempotent even if a second surface asks for it later.
+ * Inject one stylesheet once and return its disposer, for `ctx.effect` to own.
+ *
+ * Keyed by its own `data-plugin-css` id, so the injection is idempotent even if
+ * a second surface asks for it later. The two ids must stay distinct from each
+ * other: they key two separate style tags, and a shared id would make the
+ * second injection a silent no-op that drops one stylesheet.
  */
-function injectPanelCss(): () => void {
+function injectCss(id: string, css: string): () => void {
   if (typeof document === 'undefined') return NOOP_DISPOSER
-  if (document.querySelector(`style[data-plugin-css="${PANEL_CSS_ID}"]`) !== null) return NOOP_DISPOSER
+  if (document.querySelector(`style[data-plugin-css="${id}"]`) !== null) return NOOP_DISPOSER
   const tag = document.createElement('style')
   tag.dataset.plugin = 'dsh-workbuddy-connect'
-  tag.dataset.pluginCss = PANEL_CSS_ID
-  tag.textContent = PANEL_CSS
+  tag.dataset.pluginCss = id
+  tag.textContent = css
   document.head.appendChild(tag)
   return () => {
     tag.remove()
@@ -233,8 +238,18 @@ export function apply(ctx: ClientContext): void {
     },
   })
 
-  guardClientContribution('panel styles', () => {
-    ctx.effect(() => injectPanelCss(), 'dsh-workbuddy-connect: panel styles')
+  guardClientContribution('styles', () => {
+    // Both stylesheets ride one effect: they are injected together and dropped
+    // together, and a half-installed pair would render a page whose rows have no
+    // layout at all.
+    ctx.effect(() => {
+      const page = injectCss(PAGE_CSS_ID, PAGE_CSS)
+      const panel = injectCss(PANEL_CSS_ID, PANEL_CSS)
+      return () => {
+        page()
+        panel()
+      }
+    }, 'dsh-workbuddy-connect: styles')
   })
 
   // The dashboard cell. Registering a cell for a declaration that never arrives
@@ -283,25 +298,77 @@ export function apply(ctx: ClientContext): void {
         order: 40,
         label: () => t('navWorkBuddy'),
         locale: namespace,
-        inject: (): { t: WorkBuddyTranslate } => ({ t }),
+        // The settings page is the one surface that hands the user to an
+        // external page, so it is the one that gets the ambient seam source:
+        // the dialog falls back to the right sidebar's browser when neither
+        // `window.open` nor the host's own opener answers (see
+        // `open-external`). Passed as a value, never read reflectively inside
+        // the dialog, so a profile without the sidebar simply gets `undefined`.
+        // `refreshPanel` reaches the sidebar card and the dashboard — surfaces
+        // this page's own reads do not touch, and whose poll interval is a minute
+        // long, which is how a preference that changes how the card is DRAWN
+        // would otherwise appear to do nothing.
+        inject: (): { t: WorkBuddyTranslate, context: ClientContext, refreshPanel: () => void } => ({
+          t,
+          context: ctx,
+          refreshPanel: () => { void panelStore.refresh() },
+        }),
       }, WorkBuddySettingsPage)) ?? NOOP_DISPOSER
     ))
   })
 
-  // The floating account window rides the conversation header's utilities
-  // slot, but renders through a portal: the utility area is inside the header,
-  // and the window's whole point is to sit over the transcript *without*
-  // taking header space. Registering once (not per variant) is deliberate —
-  // the window merges both pools, so two occupants would stack two copies.
-  guardClientContribution('floating account window', () => {
-    ctx.slots.inject('conversation.session.header.utilities', () => (
-      guardClientContribution('floating account window', () => ctx.slots.register({
-        name: 'conversation.session.header.utilities',
-        id: 'workbuddy-floating-accounts',
-        order: 90,
+  // The Models-page provider card: one occurrence per variant, dispatched by
+  // the Models settings page with `entryKey = settingsNs` on its provider row.
+  // That row exists because the host half registers a
+  // `registerConfigurableProviders` directory entry for each variant — the slot
+  // callback fires only while the declaration is live, so on a host without the
+  // slot (or without the directory entry) the card simply never renders, and
+  // nothing else about the plugin changes.
+  //
+  // The `t` seat comes from the registration's own `locale` namespace, so the
+  // card follows the harness's active language like every other surface.
+  guardClientContribution('models provider card', () => {
+    ctx.slots.inject('settings.models.provider-card', () => (
+      guardClientContribution('models provider card', () => ctx.slots.register({
+        name: 'settings.models.provider-card',
+        // The Host's `settingsNs` for the same rows: the Models page dispatches
+        // this keyed slot with it, so the two halves must agree on the string.
+        key: WORKBUDDY_PROFILE_ENTRY_ID,
+        locale: namespace,
         inject: (): { t: WorkBuddyTranslate } => ({ t }),
-      }, WorkBuddyFloatingAccounts)) ?? NOOP_DISPOSER
+      }, WorkBuddyProviderCard)) ?? NOOP_DISPOSER
     ))
+  })
+
+  // The credit badge in the composer DOCK — the row DSH already fills with the
+  // turn's tokens / cache-hit rate / speed. It rides the same
+  // `modelDirectories` scope as the probe control (the session's model is what
+  // decides whether there is a quota to state), and it reads the SAME panel
+  // store the sidebar card and the dashboard do, so the three surfaces can never
+  // disagree about what is left.
+  guardClientContribution('composer credit badge', () => {
+    ctx.inject(['modelDirectories'], scope => {
+      guardClientContribution('composer credit badge', () => {
+        scope.slots.inject('conversation.composer.dock', () => (
+          guardClientContribution('composer credit badge', () => scope.slots.register({
+            name: 'conversation.composer.dock',
+            id: 'workbuddy-credit-badge',
+            // Last in the row: the harness's own readout owns the middle.
+            order: 100,
+            inject: sessionId => ({
+              directory: scope.modelDirectories.directoryFor(
+                sessionId as Parameters<typeof scope.modelDirectories.directoryFor>[0],
+              ).store,
+              panel: panelStore,
+              // Widened deliberately: the settings copy binder is keyed by ITS
+              // namespace, and the panel dictionary falls back to English for a
+              // key it does not carry, which is exactly the behaviour wanted here.
+              t: panelTranslator((key: string, params?: Record<string, unknown>) => t(key as WorkBuddySettingsKey, params)),
+            }),
+          }, WorkBuddyCreditBadge)) ?? NOOP_DISPOSER
+        ))
+      })
+    })
   })
 
   // The reasoning-probe seat in the conversation composer. `modelDirectories`

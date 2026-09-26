@@ -21,6 +21,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  createStoreSender,
   createWorkBuddyShim,
   WorkBuddyCatalog,
   WorkBuddyCredentialStore,
@@ -50,14 +51,23 @@ const store = new WorkBuddyCredentialStore({
   ownPath: join(dir, 'own.json'),
   refresh: async () => ({ accessToken: 'unused' }),
 })
+// The shim takes a SENDER, not a credential store: account selection (and the
+// rotation across accounts) moved out of the shim when the pool landed, and the
+// store-backed sender is the one-credential shape this script wants — it reads
+// the credential above and hands the answer straight back. Passing the
+// pre-pool `{ store, client }` object shape left `sender` undefined, so every
+// chat POST 500'd and check 4 failed for a reason that had nothing to do with
+// the hardening it verifies.
 const shim = createWorkBuddyShim({
-  store,
   catalog: new WorkBuddyCatalog(),
-  client: {
-    async chatStream() {
-      return { ok: true, response: new Response('data: [DONE]\n\n', { status: 200, headers: { 'Content-Type': 'text/event-stream' } }) }
+  sender: createStoreSender({
+    store,
+    client: {
+      async chatStream() {
+        return { ok: true, response: new Response('data: [DONE]\n\n', { status: 200, headers: { 'Content-Type': 'text/event-stream' } }) }
+      },
     },
-  },
+  }),
 })
 await shim.ready
 const port = Number(new URL(shim.baseUrl()).port)

@@ -28,6 +28,8 @@ import { WorkBuddyRotation } from './rotation.ts'
 import { FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, WorkBuddyCatalog } from './catalog.ts'
 import { workbuddyCatalogPath, WorkBuddyCatalogStore } from './catalog-store.ts'
 import { WorkBuddyVisibilityStore, workbuddyVisibilityPath } from './visibility-store.ts'
+import { WorkBuddyUsageStore, workbuddyUsagePath } from './usage-store.ts'
+import type { WorkBuddyUsageSummary } from './usage-store.ts'
 import { createWorkBuddyAdapter } from './adapter.ts'
 import { WorkBuddyContextPreference } from './context-preference.ts'
 import { createWorkBuddyShim } from './shim.ts'
@@ -35,9 +37,11 @@ import { WorkBuddyProbeService } from './probe-service.ts'
 import { newestFirst, WorkBuddyProbeStore, workbuddyProbePath } from './probe-store.ts'
 import { WorkBuddyUpstreamClient } from './upstream.ts'
 import { registerWorkBuddyStatusRoute } from './web-status.ts'
-import { createProbeKey, registerWorkBuddyProbeRoute } from './probe-route.ts'
+import { createProbeKey, keyMatches, registerWorkBuddyProbeRoute } from './probe-route.ts'
+import { openWorkBuddyLink } from './open-link.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
-import type { WorkBuddyWebCatalog, WorkBuddyWebProbeSection } from './status-paths.ts'
+import { isWorkBuddySidebarCreditStyle, WORKBUDDY_PROFILE_ENTRY_ID } from './status-paths.ts'
+import type { WorkBuddySidebarCreditStyle, WorkBuddyWebCatalog, WorkBuddyWebProbeSection } from './status-paths.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { CN_VARIANT, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
@@ -238,7 +242,7 @@ export const WORKBUDDY_AI_SETTINGS_NS = 'workbuddy-ai' as SettingsNamespace
  * back from `configEditor.entries()`, so a profile that renamed the row still
  * writes through the right one.
  */
-export const PROFILE_ENTRY_ID = 'llm-workbuddy'
+export const PROFILE_ENTRY_ID = WORKBUDDY_PROFILE_ENTRY_ID
 
 /**
  * How often the credential files are re-checked, in milliseconds.
@@ -295,14 +299,18 @@ export interface Config {
    * until the user explicitly agrees.
    */
   probeConsent?: boolean
-  /**
-   * Whether the floating account window is drawn in the conversation. On by
-   * default: it is the only place the pool's state is visible while chatting,
-   * which is exactly when a rotation matters.
-   */
-  floatingAccounts?: boolean
   /** Use the largest context window the international catalog explicitly offers. */
   useMaximumContextWindow?: boolean
+  /**
+   * How the sidebar card states each product's credit.
+   *
+   * `'remaining'` (default) is one line per product — "WorkBuddy 剩余额度 5,266";
+   * `'usage'` is the reference card's shape — a "used / total" pair over a bar of
+   * that ratio. Both describe the same pool; they differ in which figure leads,
+   * and that is a matter of taste rather than of correctness, which is why it is
+   * a setting instead of a decision this plugin makes for the user.
+   */
+  sidebarCreditStyle?: WorkBuddySidebarCreditStyle
 }
 
 /** Explicit CN desktop auth-file path (shared by the plugin schema and its section). */
@@ -312,11 +320,11 @@ const AUTH_FILE_AI_FIELD = z.string().description('WorkBuddy AI desktop auth fil
 /** Probe authorization (shared by the plugin schema and the CN section). */
 const PROBE_CONSENT_FIELD = z.boolean().default(false)
   .description('Authorize reasoning-effort probes (each probe sends real requests that may consume credit)')
-/** Floating account window visibility (shared by the plugin schema and both sections). */
-const FLOATING_ACCOUNTS_FIELD = z.boolean().default(true)
-  .description('Show the floating account window (names, remaining credit, and when a limited account will be retried)')
 const MAXIMUM_CONTEXT_WINDOW_FIELD = z.boolean().default(true)
   .description('Use the largest context window declared by WorkBuddy AI when alternatives are available (on by default)')
+/** Sidebar credit line style (shared by both variants' cards, which show the same figure). */
+const SIDEBAR_CREDIT_STYLE_FIELD = z.union(['remaining', 'usage']).default('remaining')
+  .description('Sidebar credit line: "remaining" states the balance per product; "usage" shows used / total over a bar')
 
 /**
  * The plugin's own config fields, built once so the two generations can share
@@ -334,8 +342,8 @@ const CONFIG_FIELDS = {
   authFile: AUTH_FILE_FIELD,
   authFileAI: AUTH_FILE_AI_FIELD,
   probeConsent: PROBE_CONSENT_FIELD,
-  floatingAccounts: FLOATING_ACCOUNTS_FIELD,
   useMaximumContextWindow: MAXIMUM_CONTEXT_WINDOW_FIELD,
+  sidebarCreditStyle: SIDEBAR_CREDIT_STYLE_FIELD,
 } as const
 
 /**
@@ -395,6 +403,8 @@ interface VariantRuntime {
    * another, and switching accounts switches the whole list in one read.
    */
   visibilityStore: WorkBuddyVisibilityStore
+  /** Per-account request tally, filled by the rotation as answers arrive. */
+  usageStore: WorkBuddyUsageStore
   /**
    * The visibility account key currently in effect (`uid:enterpriseId`), or
    * undefined when signed out or the credential carries no uid. Read per call,
@@ -518,6 +528,8 @@ function createVariantRuntime(
   identityOf: (variantId: string) => string | undefined,
   accountOf: (variantId: string) => string | undefined,
   keyProvider: WorkBuddyStoreOptions['keyProvider'],
+  onDesktopReadError: (message: string) => void,
+  warn: (message: string, error: unknown) => void,
 ): VariantRuntime {
   const client = new WorkBuddyUpstreamClient()
   // Read through `current()`, never the raw `config`: on 0.1.7 every marked
@@ -533,7 +545,20 @@ function createVariantRuntime(
   const pool = new WorkBuddyAccountPool({ variant })
   const contextPreference = new WorkBuddyContextPreference({ variant })
   const qr = new WorkBuddyQrLogin({ variant })
-  const accounts = new WorkBuddyAccountService({ variant, pool, store, client, qr })
+  const accounts = new WorkBuddyAccountService({
+    variant,
+    pool,
+    store,
+    client,
+    qr,
+    // The card's usage figures come from what the rotation counted, read fresh
+    // because the tally moves with every answered request.
+    usageFor: (accountId: string): WorkBuddyUsageSummary | undefined => usageStore.summary(accountId),
+    // A desktop read that fails is recorded per variant, exactly as the sweep
+    // records it: the card then says which file or binary is wrong instead of
+    // reporting "signed out" for a problem the user can fix.
+    onDesktopReadError,
+  })
   const fallback = fallbackFor(variant)
   const catalog = new WorkBuddyCatalog(fallback)
   if (variant.id !== CN_VARIANT.id) catalog.setUseMaximumContextWindow(current().useMaximumContextWindow === true)
@@ -556,6 +581,13 @@ function createVariantRuntime(
   const visibilityStore = new WorkBuddyVisibilityStore(
     workbuddyVisibilityPath(variant.visibilityFilename),
   )
+  // Request accounting: what each account has actually sent, and what the
+  // upstream said it cost. Written at most once every few seconds — a
+  // per-request write would turn every chat turn into disk I/O for a report.
+  const usageStore = new WorkBuddyUsageStore({
+    path: workbuddyUsagePath(variant.usageFilename),
+    onWriteError: error => { warn('dsh-workbuddy-connect: usage tally could not be written', error) },
+  })
   const probeService = new WorkBuddyProbeService({
     store: probeStore,
     catalog,
@@ -583,6 +615,7 @@ function createVariantRuntime(
     probeService,
     savedCatalogs,
     visibilityStore,
+    usageStore,
     account: () => accountOf(variant.id),
     fallback,
     catalogSource: 'fallback',
@@ -697,7 +730,19 @@ async function startVariant(ctx: Context, runtime: VariantRuntime): Promise<bool
   // routing decision rather than the user's problem. A refresh performed mid-
   // rotation is persisted by the pool itself, which is what keeps a recovered
   // token from being re-fetched on every later request.
-  const rotation = new WorkBuddyRotation({ pool, client, logger: ctx.logger })
+  const rotation = new WorkBuddyRotation({
+    pool,
+    client,
+    logger: ctx.logger,
+    // The tally the account card reads: one increment per answer, attributed to
+    // the member that produced it (which only the rotation knows).
+    onUsage: (accountId, usage) => { runtime.usageStore.record(accountId, usage) },
+    // Logged once per process: an unfamiliar usage block is then discovered from
+    // this line instead of guessed at in the parser.
+    onUsageShape: fields => {
+      ctx.logger.info(`dsh-workbuddy-connect: ${variant.displayName} upstream usage fields: ${fields.join(', ') || '(none)'}`)
+    },
+  })
   // The shim wants "send this body and tell me what happened"; the rotation's
   // extra bookkeeping (which accounts were tried) is not part of that contract,
   // so only the result crosses the seam.
@@ -731,9 +776,20 @@ async function startVariant(ctx: Context, runtime: VariantRuntime): Promise<bool
       // Hidden ids resolve per read from the store by the *current* account:
       // an account switch or a toggle changes the answer after the next
       // invalidate, and a signed-out or uid-less variant hides nothing.
+      //
+      // Read through `effectiveHidden`, never `disabled` directly: an account
+      // can narrow the picker to an allowlist, and that list only means anything
+      // against the catalog — every id outside it is hidden, which is a fact
+      // neither the stored list nor this call site can compute alone. The
+      // catalog is the same one the adapter lists models from, so the two agree
+      // on what "outside the allowlist" covers.
       hidden: () => {
         const account = runtime.account()
-        return account === undefined ? [] : runtime.visibilityStore.disabled(account)
+        if (account === undefined) return []
+        return runtime.visibilityStore.effectiveHidden(
+          account,
+          runtime.catalog.current().map(model => model.id),
+        )
       },
     })
     runtime.invalidate = () => {
@@ -741,21 +797,38 @@ async function startVariant(ctx: Context, runtime: VariantRuntime): Promise<bool
       ctx.emit('llm/adapters-updated')
     }
 
-    // Only the adapter registers. The plugin deliberately contributes NO
-    // `registerConfigurableProviders` directory entry — on either DSH
-    // generation: the Models settings page (present since 0.1.2, joining the
-    // same way on 0.1.5 and 0.1.6) builds its rows from that registration, so
-    // omitting it keeps the WorkBuddy providers off that page (its editor has
-    // no fields to offer them) while the adapter keeps serving models and the
-    // sections keep serving `settings.yaml` and the TUI. A live route with no
-    // directory entry joins with an empty `settingsNs`, which every page reads
-    // as unconfigured and does not render. Nothing else consumes the
-    // directory: the model picker's group headings come from the adapter's own
-    // provider metadata and catalog, and `/model` resolves through the
-    // adapter, so both are unaffected.
+    // TWO registrations, and they answer different questions.
+    //
+    // The ADAPTER is what makes models requestable under this route; the
+    // directory entry is what makes the Models settings page draw a row for the
+    // provider at all. The plugin used to contribute only the first, on the
+    // grounds that the page's editor has no fields to offer a WorkBuddy row and
+    // an unusable editor is worse than no row.
+    //
+    // That reasoning no longer holds, because the row is now the anchor for a
+    // surface the page does own: `settings.models.provider-card` is a keyed slot
+    // the Models page dispatches per row with `entryKey = settingsNs`, and this
+    // plugin registers its own card there. Without the directory entry there is
+    // no row and therefore nowhere for that card to render — the card exists only
+    // because the row does. The page's own editor stays reachable and still has
+    // nothing to offer; the card beside it is where the real controls live, which
+    // is exactly the shape the reference provider plugin uses.
+    //
+    // `settingsPath: []` means this variant's whole settings section is the
+    // profile. On 0.1.7 a plugin's composition entry IS its settings namespace
+    // (one namespace per variant would have nothing behind it), so both variants
+    // address the same document — each card reads its own variant's fields from
+    // it.
+    const releaseDirectory = ctx.llm.registerConfigurableProviders([{
+      provider: variant.id,
+      displayName: variant.displayName,
+      settingsNs: WORKBUDDY_SETTINGS_NS,
+      settingsPath: [],
+    }])
     const releaseAdapter = ctx.llm.registerAdapter([variant.id], workbuddy.adapter)
     try {
       ctx.effect(() => () => {
+        releaseDirectory()
         releaseAdapter()
         void shim.close()
       })
@@ -846,12 +919,21 @@ export function apply(ctx: Context, config: Config): void {
     id => lastIdentities.get(id),
     id => lastAccounts.get(id),
     atRestKeysFor(variant),
+    message => { desktopReadError.set(variant.id, message.slice(0, 300)) },
+    (message, error) => { ctx.logger.warn(message, error) },
   ))
 
   // Same-origin routes backing each Plugin-configuration card; the webServer
   // service is optional (a headless profile serves no browser).
   const probeKey = createProbeKey()
   let setMaximumContextWindow: ((enabled: boolean) => Promise<{ state: string; reason?: string }>) | undefined
+  /**
+   * Writes the sidebar credit-line style through the same settings service the
+   * maximum-context preference uses. Undefined on a host with no settings
+   * service: the status document then carries no style, and the card keeps its
+   * default rather than rendering a control that could not be saved.
+   */
+  let setSidebarCreditStyle: ((style: WorkBuddySidebarCreditStyle) => Promise<{ state: string; reason?: string }>) | undefined
   /**
    * Whether the host mounted a settings service this plugin can write through.
    * Decided once, inside the `settings` inject. The maximum-context getter
@@ -949,7 +1031,10 @@ export function apply(ctx: Context, config: Config): void {
         resolveContextWindow: (modelId, declared) => runtime.contextPreference.resolve(modelId, declared),
         catalog: () => catalogSection(runtime),
         probe: () => probeSection(runtime, current().probeConsent === true),
-        floatingWindow: () => current().floatingAccounts !== false,
+        // The card's display preference rides the status document so the sidebar
+        // knows how to draw itself before anything else on the page can tell it
+        // what the setting says.
+        sidebarCreditStyle: () => current().sidebarCreditStyle === 'usage' ? 'usage' : 'remaining',
         emptyReason: () => desktopReadError.get(runtime.variant.id),
         store: runtime.store,
         probeKey,
@@ -958,9 +1043,15 @@ export function apply(ctx: Context, config: Config): void {
         // the card renders no controls) when no uid-keyed account is in effect.
         visibility: () => {
           const account = runtime.account()
-          return account === undefined
-            ? undefined
-            : { account, disabled: runtime.visibilityStore.disabled(account) }
+          if (account === undefined) return undefined
+          const allowlist = runtime.visibilityStore.allowlist(account)
+          return {
+            account,
+            disabled: runtime.visibilityStore.disabled(account),
+            // Omitted rather than an empty array: absent is the "no filter"
+            // state, which is what the page renders the checkbox for.
+            ...allowlist === undefined ? {} : { allowlist },
+          }
         },
         ...runtime.variant.id === CN_VARIANT.id ? {} : {
           // Presence of this field in the document is the card's capability
@@ -1035,6 +1126,22 @@ export function apply(ctx: Context, config: Config): void {
             return setMaximumContextWindow(enabled)
           },
         },
+        // On BOTH variants, unlike the maximum-window preference: the sidebar
+        // style is one plugin-wide setting shown by both products' cards, so
+        // either route may carry the write.
+        setSidebarCreditStyle: async style => {
+          if (setSidebarCreditStyle === undefined) return { state: 'failed', reason: 'settings are unavailable' }
+          const result = await setSidebarCreditStyle(style)
+          // The card redraws from a status read, so the change has to be visible
+          // to the next one without waiting for a sweep.
+          if (result.state === 'updated') ctx.emit('llm/adapters-updated')
+          return result
+        },
+        // The sign-in link is not about this variant: both products' cards share
+        // one dialog layout, and the page hands this route whatever link the
+        // host minted. Opening it is the host's job because only the host can
+        // ask the operating system — see the module for why the page cannot.
+        openExternal: url => openWorkBuddyLink(url),
         setModelVisibility: async (modelId, visible, expectedAccount) => {
           // Refused rather than bucketed: a signed-out variant, or a
           // credential with no uid, has no account to key the preference by,
@@ -1060,7 +1167,32 @@ export function apply(ctx: Context, config: Config): void {
           runtime.invalidate()
           return { state: 'updated' }
         },
-      }, probeKey)
+        setModelAllowlist: async (ids, expectedAccount) => {
+          const account = runtime.account()
+          if (account === undefined) {
+            return { state: 'failed', reason: 'model visibility needs a signed-in account with a stable user id' }
+          }
+          // The same expected-account guard as the per-model write, for the same
+          // reason: an allowlist sent from a card rendering account A must not
+          // land in B's bucket after the desktop switched accounts.
+          if (expectedAccount !== account) {
+            return { state: 'stale-account', reason: 'the signed-in account changed' }
+          }
+          try {
+            runtime.visibilityStore.setAllowlist(account, ids)
+          } catch (error: unknown) {
+            return { state: 'failed', reason: error instanceof Error ? error.message.slice(0, 300) : String(error) }
+          }
+          // The adapter resolves hidden ids through the store on every read, so
+          // the picker follows the filter — but only after the provider snapshot
+          // is rebuilt, which is what `invalidate` does.
+          runtime.invalidate()
+          return { state: 'updated' }
+        },
+        // Any variant's key opens the link: the action is not variant-scoped,
+        // and the page may be rendering product A while B is the one signed in.
+        // Compared the same constant-time way the handler compares a bare key.
+      }, (presented: string | undefined) => keyMatches(probeKey, presented))
     }
   })
 
@@ -1136,6 +1268,22 @@ export function apply(ctx: Context, config: Config): void {
       }
       try {
         await forms.update(entryId() ?? PROFILE_ENTRY_ID, { useMaximumContextWindow: enabled })
+      } catch (error: unknown) {
+        return { state: 'failed', reason: error instanceof Error ? error.message.slice(0, 300) : String(error) }
+      }
+      return { state: 'updated' }
+    }
+    // The sidebar style is the same kind of write: a config field the next status
+    // read reflects, which is what redraws the card without a reload.
+    setSidebarCreditStyle = async style => {
+      if (forms.update === undefined) {
+        return { state: 'failed', reason: 'this host does not accept settings writes' }
+      }
+      if (!isWorkBuddySidebarCreditStyle(style)) {
+        return { state: 'failed', reason: 'unknown sidebar credit style' }
+      }
+      try {
+        await forms.update(entryId() ?? PROFILE_ENTRY_ID, { sidebarCreditStyle: style })
       } catch (error: unknown) {
         return { state: 'failed', reason: error instanceof Error ? error.message.slice(0, 300) : String(error) }
       }

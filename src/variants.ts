@@ -63,6 +63,14 @@ export interface WorkBuddyVariant {
   /** Basename of the plugin-owned probe-record file under `$DSH_HOME`. */
   probeFilename: string
   /**
+   * Basename of the plugin-owned request-usage file under `$DSH_HOME`.
+   *
+   * One per variant like the pools and catalogs: the two products have separate
+   * subscriptions, so one product's request tally must never be read as the
+   * other's.
+   */
+  usageFilename: string
+  /**
    * Basename of the plugin-owned saved-catalog file under `$DSH_HOME`.
    *
    * One per variant, like the probe records: the two endpoints disagree about
@@ -100,6 +108,7 @@ export const WORKBUDDY_VARIANTS: readonly WorkBuddyVariant[] = [
     accountFilename: '.workbuddy-accounts.json',
     contextFilename: '.workbuddy-context.json',
     probeFilename: '.workbuddy-probe.json',
+    usageFilename: '.workbuddy-usage.json',
     catalogFilename: '.workbuddy-catalog.json',
     visibilityFilename: '.workbuddy-model-visibility.json',
     statusPath: WORKBUDDY_STATUS_PATH,
@@ -117,6 +126,7 @@ export const WORKBUDDY_VARIANTS: readonly WorkBuddyVariant[] = [
     accountFilename: '.workbuddy-ai-accounts.json',
     contextFilename: '.workbuddy-ai-context.json',
     probeFilename: '.workbuddy-ai-probe.json',
+    usageFilename: '.workbuddy-ai-usage.json',
     catalogFilename: '.workbuddy-ai-catalog.json',
     visibilityFilename: '.workbuddy-ai-model-visibility.json',
     statusPath: WORKBUDDY_AI_STATUS_PATH,

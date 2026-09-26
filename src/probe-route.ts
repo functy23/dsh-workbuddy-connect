@@ -26,8 +26,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
-import { WORKBUDDY_PROBE_PATH } from './status-paths.ts'
-import type { WorkBuddyProbeAction } from './status-paths.ts'
+import { isWorkBuddySidebarCreditStyle, WORKBUDDY_PROBE_PATH } from './status-paths.ts'
+import type { WorkBuddyProbeAction, WorkBuddySidebarCreditStyle } from './status-paths.ts'
 
 /** Largest control body accepted; these payloads are a few dozen bytes. */
 const MAX_BODY_BYTES = 4096
@@ -53,6 +53,36 @@ export interface WorkBuddyProbeRouteOptions {
   /** Persist and apply the international context-window preference. */
   setMaximumContextWindow?: (enabled: boolean) => Promise<{ state: string; reason?: string }>
   /**
+   * Persist the sidebar's credit-line style.
+   *
+   * A plugin-wide preference rather than a per-product one (the sidebar shows
+   * both products at once), which is why both variants' routes accept it: the
+   * card that happens to be rendering when the user picks can write it, and the
+   * next read of either document carries the answer.
+   */
+  setSidebarCreditStyle?: (style: WorkBuddySidebarCreditStyle) => Promise<{ state: string; reason?: string }>
+  /**
+   * Open one absolute http(s) link in the user's own browser.
+   *
+   * The sign-in routes hand the user a page on the provider's site, and only
+   * their own browser has the session that page needs. A desktop WebView
+   * cannot do that itself — those shells answer `window.open` with nothing —
+   * so the hand-off happens here, in the process that can ask the operating
+   * system. The scheme is validated on this side, immediately before the
+   * launch, so the browser is never the thing enforcing it.
+   */
+  openExternal?: (url: string) => Promise<{ state: string; reason?: string }>
+  /**
+   * Replace the signed-in account's model allowlist (`[]` clears it).
+   *
+   * A separate seam from {@link setModelVisibility} because the two write
+   * different lists: a per-model toggle edits the hide-list, while this
+   * replaces the "only these" filter. Collapsing them into one call would make
+   * "hide this one model" and "show only these" the same write, and the second
+   * would erase the first.
+   */
+  setModelAllowlist?: (ids: readonly string[], expectedAccount: string) => Promise<{ state: string; reason?: string }>
+  /**
    * Hide or show one model in the picker for the signed-in account. The
    * handler refuses (with a reason, not a crash) when no account with a stable
    * uid is in effect, when the expected account no longer matches (a stale
@@ -74,9 +104,26 @@ export function createProbeKey(): string {
 }
 
 /**
- * Constant-time key comparison; a length mismatch is a failure, not a crash.
+ * Whether one presented control key is accepted.
+ *
+ * The value is a single key (the common case) or a predicate over the keys the
+ * host has minted — one per variant. The predicate exists for the sign-in link
+ * (`open-link`): that action is not about a variant at all, so a page
+ * rendering product A has to be able to ask through B's route when B is the one
+ * with a signed-in account, and the alternative — a third route whose URL the
+ * page has to guess — buys nothing but a second key to keep in sync.
  */
-function keyMatches(expected: string, presented: string | undefined): boolean {
+export type WorkBuddyProbeKey = string | ((presented: string | undefined) => boolean)
+
+/**
+ * Constant-time key comparison; a length mismatch is a failure, not a crash.
+ *
+ * Exported because the caller that registers this route also builds the
+ * key-accepting predicate for it: a handler that compares keys one way while
+ * its registration compares them another is exactly the kind of drift that ends
+ * with a timing side channel in the copy nobody re-read.
+ */
+export function keyMatches(expected: string, presented: string | undefined): boolean {
   if (presented === undefined || presented.length !== expected.length) return false
   const a = Buffer.from(expected)
   const b = Buffer.from(presented)
@@ -133,6 +180,35 @@ function parseAction(text: string): WorkBuddyProbeAction | undefined {
     if (typeof account !== 'string' || account === '') return undefined
     return { action: 'set-model-visibility', model: model.trim(), visible: wrapped['visible'], account }
   }
+  if (action === 'set-sidebar-credit-style') {
+    const style = wrapped['creditStyle']
+    // Validated against the shared closed set rather than passed through: the
+    // value reaches the plugin's own config schema, and a typo would otherwise
+    // be stored and read back as a style nothing renders.
+    if (!isWorkBuddySidebarCreditStyle(style)) return undefined
+    return { action: 'set-sidebar-credit-style', creditStyle: style }
+  }
+  if (action === 'set-model-allowlist') {
+    const account = wrapped['account']
+    const allowlist = wrapped['allowlist']
+    // Same account guard as the per-model write, and for the same reason: an
+    // allowlist sent from a card showing account A must not land in B's bucket.
+    if (typeof account !== 'string' || account === '') return undefined
+    if (!Array.isArray(allowlist)) return undefined
+    if (!allowlist.every(id => typeof id === 'string' && id !== '')) return undefined
+    // Deduped here rather than at the store: a hand-edited or retried request
+    // is untrusted input, and the wire shape should not carry duplicates into
+    // the file.
+    return { action: 'set-model-allowlist', account, allowlist: [...new Set(allowlist as string[])] }
+  }
+  if (action === 'open-link') {
+    const url = wrapped['url']
+    // Shape only: the scheme decision belongs to the opener, which applies it
+    // again at the last moment. Refusing here as well keeps an obviously wrong
+    // request from reaching a seam that would only have to re-report it.
+    if (typeof url !== 'string' || url.trim() === '') return undefined
+    return { action: 'open-link', url: url.trim() }
+  }
   if (action === 'probe') {
     const model = wrapped['model']
     if (typeof model !== 'string' || model.trim() === '') return undefined
@@ -147,8 +223,13 @@ function parseAction(text: string): WorkBuddyProbeAction | undefined {
  */
 export function workBuddyProbeHandler(
   deps: WorkBuddyProbeRouteOptions,
-  key: string,
+  key: WorkBuddyProbeKey,
 ): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+  // A bare key is compared constantly-time; a predicate brings its own rule
+  // (see {@link WorkBuddyProbeKey}).
+  const accepts = typeof key === 'string'
+    ? (presented: string | undefined): boolean => keyMatches(key, presented)
+    : key
   return async (req, res) => {
     if (req.method !== 'POST') {
       json(res, 405, { error: 'method not allowed' })
@@ -158,7 +239,7 @@ export function workBuddyProbeHandler(
       json(res, 403, { error: 'request-not-trusted' })
       return
     }
-    if (!keyMatches(key, req.headers['x-workbuddy-probe-key'] as string | undefined)) {
+    if (!accepts(req.headers['x-workbuddy-probe-key'] as string | undefined)) {
       json(res, 403, { error: 'invalid-probe-key' })
       return
     }
@@ -194,6 +275,14 @@ export function workBuddyProbeHandler(
         json(res, 200, await deps.setMaximumContextWindow(action.enabled === true))
         return
       }
+      if (action.action === 'set-sidebar-credit-style') {
+        if (deps.setSidebarCreditStyle === undefined) {
+          json(res, 404, { error: 'sidebar-style-setting-not-supported' })
+          return
+        }
+        json(res, 200, await deps.setSidebarCreditStyle(action.creditStyle as WorkBuddySidebarCreditStyle))
+        return
+      }
       if (action.action === 'set-model-visibility') {
         if (deps.setModelVisibility === undefined) {
           json(res, 404, { error: 'visibility-setting-not-supported' })
@@ -202,6 +291,25 @@ export function workBuddyProbeHandler(
         json(res, 200, await deps.setModelVisibility(
           action.model as string,
           action.visible === true,
+          action.account as string,
+        ))
+        return
+      }
+      if (action.action === 'open-link') {
+        if (deps.openExternal === undefined) {
+          json(res, 404, { error: 'open-link-not-supported' })
+          return
+        }
+        json(res, 200, await deps.openExternal(action.url as string))
+        return
+      }
+      if (action.action === 'set-model-allowlist') {
+        if (deps.setModelAllowlist === undefined) {
+          json(res, 404, { error: 'visibility-setting-not-supported' })
+          return
+        }
+        json(res, 200, await deps.setModelAllowlist(
+          action.allowlist as readonly string[],
           action.account as string,
         ))
         return
@@ -217,7 +325,7 @@ export function workBuddyProbeHandler(
 export function registerWorkBuddyProbeRoute(
   ctx: Context,
   deps: WorkBuddyProbeRouteOptions,
-  key: string,
+  key: WorkBuddyProbeKey,
 ): void {
   const path = deps.path ?? WORKBUDDY_PROBE_PATH
   ctx.effect(() => {

@@ -106,12 +106,24 @@ export interface WorkBuddyCreditAccount {
   packageName: string
   remain: number
   size: number
+  /**
+   * Credits this package has consumed this cycle, when the upstream stated it.
+   *
+   * Carried rather than derived from `size - remain`: the two endpoints word it
+   * independently (`CycleCapacityUsed` on the personal one, `used_num` on the
+   * enterprise one), and a package can report a size with no used figure at all.
+   * A renderer that showed a subtraction as "used" would be inventing a number
+   * the upstream never sent.
+   */
+  used?: number
   unlimited?: true
 }
 
 /** Aggregated credit answer for one credential. */
 export interface WorkBuddyCredits {
   total: number
+  /** Summed usage across the packages that stated one, when any did. */
+  used?: number
   accounts: readonly WorkBuddyCreditAccount[]
   /**
    * The account's cycle quota is uncapped (`limitNum === -1` on the CN
@@ -133,6 +145,42 @@ export interface WorkBuddyRefreshOutcome {
   refreshToken?: string
   expiresInSec?: number
   domain?: string
+}
+
+/**
+ * A refresh that did not produce a token, classified like every other upstream
+ * failure.
+ *
+ * `definitive` is the only field callers must branch on: true means the
+ * upstream answered and refused this credential (the session really is gone),
+ * false means nothing was learned about the session at all.
+ */
+export class WorkBuddyRefreshFailure extends Error {
+  readonly kind: UpstreamErrorKind
+  readonly definitive: boolean
+
+  constructor(kind: UpstreamErrorKind, message: string) {
+    super(message)
+    this.name = 'WorkBuddyRefreshFailure'
+    this.kind = kind
+    // A 4xx is the endpoint refusing the credential or the request; anything
+    // else (transport, 5xx, an unreadable body) leaves the session's fate
+    // unknown, and an account must not be spent on unknown.
+    this.definitive = kind === 'session_dead'
+      || kind === 'client'
+      || kind === 'not_found'
+      || kind === 'hard_credit'
+  }
+}
+
+/** Build a {@link WorkBuddyRefreshFailure}; the one place that decides. */
+export function refreshFailure(kind: UpstreamErrorKind, message: string): WorkBuddyRefreshFailure {
+  return new WorkBuddyRefreshFailure(kind, message)
+}
+
+/** Whether an unknown throw from a refresh is a definitive refusal. */
+export function isDefinitiveRefreshFailure(error: unknown): boolean {
+  return error instanceof WorkBuddyRefreshFailure && error.definitive
 }
 
 /** Chat answer: either a live SSE response or a classified failure. */
@@ -654,20 +702,48 @@ export class WorkBuddyUpstreamClient {
     }
   }
 
-  /** POST the token-refresh endpoint; the caller merges the outcome. */
+  /**
+   * POST the token-refresh endpoint; the caller merges the outcome.
+   *
+   * A failure arrives as a {@link WorkBuddyRefreshFailure} — carrying the same
+   * classification chat failures get — rather than as a bare `Error`. The
+   * distinction the caller needs is *definitive versus not*: "the upstream
+   * refused this refresh token" is evidence the session is really gone, while a
+   * timeout, a 5xx, or a dropped connection is evidence about the network. Only
+   * the first may cost the user an account.
+   */
   async refreshToken(credential: WorkBuddyCredential): Promise<WorkBuddyRefreshOutcome> {
-    const response = await fetch(`${chatBase(credential)}/v2/plugin/auth/token/refresh`, {
-      method: 'POST',
-      headers: refreshHeaders(credential),
-      signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
-    })
-    const envelope = await readEnvelope(response)
-    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    let response: Response
+    try {
+      response = await fetch(`${chatBase(credential)}/v2/plugin/auth/token/refresh`, {
+        method: 'POST',
+        headers: refreshHeaders(credential),
+        signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
+      })
+    } catch (error: unknown) {
+      throw refreshFailure('server', `token refresh transport error: ${String(error)}`)
+    }
+    let envelope: Envelope
+    try {
+      envelope = await readEnvelope(response)
+    } catch (error: unknown) {
+      // A body this build cannot read is not a refusal either: the upstream
+      // answered, but `server` keeps the account alive rather than dead.
+      throw refreshFailure('server', String(error))
+    }
+    if (!response.ok || envelope.code !== 0) {
+      const kind = classifyUpstreamError(response.status, envelope.msg)
+      throw refreshFailure(kind, `workbuddy upstream ${kind} (http ${response.status}): ${envelope.msg.slice(0, 160)}`)
+    }
     const data = typeof envelope.data === 'object' && envelope.data !== null
       ? envelope.data as Record<string, unknown>
       : {}
     const accessToken = typeof data['accessToken'] === 'string' ? data['accessToken'] : ''
-    if (accessToken === '') throw new Error('workbuddy token refresh returned no accessToken; sign in again in the WorkBuddy app')
+    if (accessToken === '') {
+      // An accepted refresh that mints nothing is a broken credential rather
+      // than an unreachable endpoint, so it is definitive like a refusal.
+      throw refreshFailure('session_dead', 'workbuddy token refresh returned no accessToken; sign in again in the WorkBuddy app')
+    }
     const outcome: WorkBuddyRefreshOutcome = { accessToken }
     if (typeof data['refreshToken'] === 'string' && data['refreshToken'] !== '') outcome.refreshToken = data['refreshToken']
     if (typeof data['expiresIn'] === 'number' && data['expiresIn'] > 0) outcome.expiresInSec = data['expiresIn']
@@ -858,6 +934,8 @@ export class WorkBuddyUpstreamClient {
     const rawAccounts = Array.isArray(inner['Accounts']) ? inner['Accounts'] : []
     const accounts: WorkBuddyCreditAccount[] = []
     let total = 0
+    let usedTotal = 0
+    let usedSeen = false
     for (const raw of rawAccounts) {
       if (typeof raw !== 'object' || raw === null) continue
       const account = raw as Record<string, unknown>
@@ -872,13 +950,23 @@ export class WorkBuddyUpstreamClient {
       else remain = capacityRemain
       if (remain < 0) remain = 0
       total += remain
+      // `CycleCapacityUsed` is this cycle's consumption. Some rows carry only a
+      // lifetime `CapacityUsed`, a different number, which is deliberately not
+      // read here: mixing the two would make one package's figure mean something
+      // the others' do not.
+      const used = cycleUsed > 0 ? cycleUsed : undefined
+      if (used !== undefined) {
+        usedSeen = true
+        usedTotal += used
+      }
       accounts.push({
         packageName: typeof account['PackageName'] === 'string' ? account['PackageName'] : '(unnamed)',
         remain,
         size: size > 0 ? size : numberField('CapacitySize'),
+        ...used === undefined ? {} : { used },
       })
     }
-    return { total, accounts }
+    return { total, accounts, ...usedSeen ? { used: usedTotal } : {} }
   }
 
   /**
@@ -957,7 +1045,8 @@ export class WorkBuddyUpstreamClient {
     if (remain < 0) remain = 0
     return {
       total: remain,
-      accounts: [{ packageName: enterprisePackageName, remain, size: limit }],
+      used,
+      accounts: [{ packageName: enterprisePackageName, remain, size: limit, used }],
       ...resetTime === undefined ? {} : { cycleResetTime: resetTime },
     }
   }

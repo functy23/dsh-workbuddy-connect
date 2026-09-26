@@ -14,7 +14,7 @@
  * @module dsh-workbuddy-connect/client/panel
  */
 
-import type { WorkBuddyWebAccount, WorkBuddyWebStatus } from '../status-paths.ts'
+import type { WorkBuddySidebarCreditStyle, WorkBuddyWebAccount, WorkBuddyWebStatus } from '../status-paths.ts'
 import { CARD_VARIANTS } from './card-variants.ts'
 import type { WorkBuddyCardVariant } from './card-variants.ts'
 import type { PanelKey } from './panel-copy.ts'
@@ -46,12 +46,44 @@ export interface PanelProductView {
   benched: number
   /** Where the served model list came from, when the document says. */
   catalogSource: 'live' | 'saved' | 'fallback' | 'none'
+  /**
+   * Remaining credit across the pool, undefined when no account reported one.
+   *
+   * The same number `creditTotal` carries as a stat, kept here as a number
+   * because the footer card renders it as a BAR — a fill needs the value, not
+   * the formatted string the stat list hands a reader.
+   */
+  creditsRemaining?: number
+  /**
+   * The pool's capacity, undefined when it cannot be stated completely.
+   *
+   * "Cannot be stated" covers an uncapped account and any account whose answer
+   * carried no capacity — see {@link creditCapacity} — and the card then shows
+   * the remaining figure alone.
+   */
+  creditsCapacity?: number
 }
 
 /** The whole dashboard. */
 export interface PanelView {
   /** Both products, in display order. */
   products: readonly PanelProductView[]
+  /**
+   * The products the SIDEBAR CARD lists — {@link products} minus the ones with
+   * nothing to say.
+   *
+   * The dashboard still shows every product (it is where a product gets set up),
+   * while the card is a glance at what is being spent: a product with no account
+   * has no figures, and a permanent "WorkBuddy AI · Not signed in" row turns a
+   * status card into a reminder about something the user does not use. A product
+   * WITH accounts stays even when all of them are set aside — that is a fact
+   * about the card's own subject, and hiding it would hide the one state worth
+   * acting on.
+   *
+   * Decided here rather than in the component so it is testable without a DOM,
+   * like every other fact this module produces.
+   */
+  footProducts: readonly PanelProductView[]
   /** Whether a sweep is in flight and nothing has been read yet. */
   loading: boolean
   /** Whether a host route has ever answered. */
@@ -64,6 +96,15 @@ export interface PanelView {
   modelCount: number
   /** The footer card's tooltip: what the card opens and what it currently says. */
   footTitle: string
+  /**
+   * How the sidebar states each product's credit — the user's choice, carried on
+   * the status document (see {@link WorkBuddySidebarCreditStyle}).
+   *
+   * Resolved here rather than inside the component so the choice is testable
+   * without a DOM, and so both surfaces read one value: a document that cannot
+   * state the preference (an older host) leaves the default in place.
+   */
+  creditStyle: WorkBuddySidebarCreditStyle
 }
 
 /** Inputs the projection needs beyond the snapshot itself. */
@@ -92,6 +133,24 @@ function creditTotal(accounts: readonly WorkBuddyWebAccount[]): number | undefin
   const known = accounts.filter(account => account.credits !== undefined)
   if (known.length === 0) return undefined
   return known.reduce((sum, account) => sum + (account.credits ?? 0), 0)
+}
+
+/**
+ * The pool's stated capacity, summed the same way as {@link creditTotal}.
+ *
+ * undefined unless EVERY account that reported a balance also reported a cap:
+ * a partial sum would understate the pool's size while looking like a complete
+ * figure, and the used amount derived from it would be wrong in the direction
+ * nobody checks (used = total - remaining would come out too large).
+ */
+function creditCapacity(accounts: readonly WorkBuddyWebAccount[]): number | undefined {
+  const known = accounts.filter(account => account.credits !== undefined)
+  if (known.length === 0) return undefined
+  if (known.some(account => account.creditsTotal === undefined)) return undefined
+  const capacities = known.map(account => account.creditsTotal ?? 0)
+  // An all-zero capacity is the upstream saying "no cap", not a zero-sized pool.
+  if (capacities.every(capacity => capacity <= 0)) return undefined
+  return capacities.reduce((sum, capacity) => sum + capacity, 0)
 }
 
 /** Whether an account is benched right now. */
@@ -153,6 +212,7 @@ function productView(
     },
     { label: 'modelCount', value: formatCount(models.length) },
   ]
+  const capacity = creditCapacity(accounts)
   return {
     id: variant.id,
     name: variant.appName,
@@ -161,6 +221,8 @@ function productView(
     stats,
     benched,
     catalogSource,
+    ...total === undefined ? {} : { creditsRemaining: total },
+    ...capacity === undefined ? {} : { creditsCapacity: capacity },
   }
 }
 
@@ -181,13 +243,34 @@ export function buildPanelView(options: BuildPanelViewOptions): PanelView {
   const benchedCount = products.reduce((sum, product) => sum + product.benched, 0)
   return {
     products,
+    footProducts: products.filter(product =>
+      product.state === 'signed-in' || countOf(product, 'accountCount') > 0),
     loading: snapshot.loading && snapshot.fetchedAt === 0,
     available: snapshot.fetchedAt > 0,
     accountCount,
     benchedCount,
     modelCount,
     footTitle: footTitle(products),
+    creditStyle: creditStyleOf(snapshot),
   }
+}
+
+/**
+ * The card's display preference, as the host stated it.
+ *
+ * Read from whichever document carries it (both variants are told the same
+ * value — it is one plugin-wide setting, not a per-product one), and any
+ * document that cannot state it — an older host, or a read that failed — leaves
+ * the default shape in place rather than blanking the card.
+ */
+function creditStyleOf(snapshot: WorkBuddyPanelSnapshot): WorkBuddySidebarCreditStyle {
+  for (const product of CARD_VARIANTS) {
+    const status = snapshot.statuses[product.id]
+    if (status === undefined) continue
+    if (status.status === 'signed-in' && status.sidebarCreditStyle !== undefined) return status.sidebarCreditStyle
+    if (status.status === 'signed-out' && status.sidebarCreditStyle !== undefined) return status.sidebarCreditStyle
+  }
+  return 'remaining'
 }
 
 /** Read one numeric stat back out of a product block. */

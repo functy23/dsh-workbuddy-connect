@@ -75,9 +75,9 @@
     "@deepseek-ai/dsh-atomic-write": "^0.1.7-alpha.1",
     "@deepseek-ai/dsh-attachment": "^0.1.7-alpha.1",
     "@deepseek-ai/dsh-client-ui-layout": "^0.1.7-alpha.1",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.7-alpha.1",
     "@deepseek-ai/dsh-client-ui-sidebar": "^0.1.7-alpha.1",
     "@deepseek-ai/dsh-client-ui-slots": "^0.1.7-alpha.1",
-    "@deepseek-ai/dsh-client-ui-settings": "^0.1.7-alpha.1",
     "@deepseek-ai/dsh-home-paths": "^0.1.7-alpha.1",
     "@deepseek-ai/dsh-host-webserver": "^0.1.7-alpha.1",
     "@deepseek-ai/dsh-llm": "^0.1.7-alpha.1",
@@ -89,12 +89,14 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.3",
+    "@deepseek-ai/cosmokit": "1.8.4",
     "@deepseek-ai/dsh-atomic-write": "0.1.7-alpha.1",
     "@deepseek-ai/dsh-attachment": "0.1.7-alpha.1",
     "@deepseek-ai/dsh-client-locale": "0.1.7-alpha.1",
     "@deepseek-ai/dsh-client-ui-conversation": "0.1.7-alpha.1",
     "@deepseek-ai/dsh-client-ui-layout": "0.1.7-alpha.1",
     "@deepseek-ai/dsh-client-ui-model-selection": "0.1.7-alpha.1",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.1.7-rc.1",
     "@deepseek-ai/dsh-client-ui-renderer": "0.1.7-alpha.1",
     "@deepseek-ai/dsh-client-ui-settings": "0.1.7-alpha.1",
     "@deepseek-ai/dsh-client-ui-sidebar": "0.1.7-alpha.1",
@@ -117,7 +119,6 @@
     "react-test-renderer": "18.3.1",
     "tsdown": "^0.22.2",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.8",
-    "@deepseek-ai/cosmokit": "1.8.4"
+    "vitest": "^4.1.8"
   }
 }

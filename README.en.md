@@ -35,43 +35,76 @@ Both the CN **WorkBuddy** and the international **WorkBuddy AI** apps are suppor
 
   A limited account is set aside, and the card says when it returns — in hours when that is the honest unit. **That time comes from the upstream**, which states the moment the allowance resets in its 429 body (for example "your usage will reset at 2026-09-13 21:50:51 UTC+8"). A schedule the server already knows beats one this plugin would invent, and the plugin's own backoff (a minute, doubling, capped at fifteen for a rate limit; an hour, capped at a day, for exhausted quota) applies only when the upstream says nothing.
 
+  A benching is decided by the upstream's answers alone: the **thirty-second credential poll never clears it**, and it never switches an account you disabled back on. The poll only treats the source file as a new sign-in when the credential in it demonstrably post-dates the one the pool holds — which means the desktop app really did sign in again.
+
+  A 401 is handled two ways: the account is marked `sign-in expired` only when the upstream **refuses** the refresh outright, and the card's Enable button brings it back. A refresh that merely could not be completed — a timeout, a 5xx, an unreadable body — says nothing about the session, so the account is benched for a while instead of being written off.
+
   Accounts come from two places: **the desktop app's sign-in is captured automatically**, and you can **add more by QR** from the card (scan with the phone app; the sign-in joins the plugin only and does not touch the desktop app).
 
 
 ## UI structure
 
-Three surfaces, one navigation story. Every one of them registers through a DSH slot — the plugin mounts nothing of its own:
+Four surfaces, one navigation story. Every one of them registers through a DSH slot — the plugin mounts nothing of its own:
 
 | Surface | Purpose | What it shows |
 |---|---|---|
-| **Sidebar foot** — the "WorkBuddy" card | Always-visible summary | One line per product: account count and total remaining credit (or the sign-in state) |
+| **Sidebar foot** — the "WorkBuddy" card | Always-visible summary | One line per product: spend as "used / total" over a bar, or the bare balance when no capacity was declared. **A product with no account is not listed at all** |
 | **Centre-column dashboard** (opened by the card) | The full panel | Per product: accounts, total credit, models, benched accounts, catalog source; plus Refresh and Close |
-| **Settings → DSH-WorkBuddy** | The management page | Account pool (add / test / remove / QR / token sign-in), model list, context-length switch, reasoning-level detection |
+| **Settings → DSH-WorkBuddy** | The management page | Account pool (add / test / enable / remove / QR / token sign-in), model list, context-length switch, reasoning-level detection |
+| **Settings → Models → WorkBuddy (AI)** | A summary card inside that provider's row | Account count and how many are ready, model count, benched count, and the accounts with their balances |
 
-In the 56px collapsed rail the card becomes a 36px icon button that opens the same dashboard. Opening the dashboard replaces the centre column without touching the current Session; Close (or the card again) returns to the conversation.
+The card gives each product **one line**, and by default states **the remaining credit alone** (`WorkBuddy 剩余额度 5,266`) — the cycle's capacity (the figure after the slash, up to 6200 across two accounts) is not what anyone opens the sidebar to read. Switch to the reference card's shape — a "used / total" pair over a ratio bar — from **Settings → DSH-WorkBuddy → Sidebar → Sidebar credit line**; both styles are one click apart and take effect at once.
 
-The two products' figures are always side by side and **never added together**: their credits are not convertible and their accounts are not interchangeable.
+In the 56px collapsed rail the card becomes a 36px quota ring that opens the same dashboard. Opening the dashboard replaces the centre column without touching the current Session; Close (or the card again) returns to the conversation.
 
+The two products' figures are **always stated side by side and never summed**: their credits are not convertible and their accounts are not interchangeable.
+
+### How the UI is built
+
+All four surfaces share one implementation:
+
+- **Styles are classes, not inline objects.** Every rule lives in the two stylesheets `src/client/ui-styles.ts` returns (`wbp-` prefixed) and every colour is a `--dsw-alias-*` theme token. An inline object can carry a token but not a `:hover`, a `:focus-visible`, an `::after`, or a media query — so each interactive affordance used to be reimplemented in JavaScript, and each colour was a literal that got dark mode wrong.
+- **The settings page is a column of rows, not a stack of cards.** A 720px content column, groups of hairline-separated rows under a heading (title and description left, control right), the same shape as the harness's own General and Models pages. Account rows fold: the head line is always visible, and opening it reveals the balance, the state and the actions.
+- **Buttons, switches and tags are the platform's own** (`@deepseek-ai/dsh-client-ui-primitives`, a seed module the browser shell provides), so a row's controls are literally the controls the harness's settings pages draw.
+- **The Models-page card is self-contained.** It shows the summary and offers a Refresh; it does not navigate, because the settings shell exposes no navigation seam to a plugin and inventing a URL would be a button that looks live and does nothing. Managing accounts stays on the management page.
 ### Managing accounts
 
 Settings → **DSH-WorkBuddy** (its own entry in the settings navigation):
 
-The page is **one card**, with the accounts above and the models below.
+The page is a **column of rows**, not a card, with the accounts above and the
+models below.
 
-The **accounts** block holds both products in a single list, each row carrying
-a small grey label under the name saying which product it belongs to
+The **accounts** group holds both products in a single list. Each row's head line
+carries the account name and a quiet label saying which product it belongs to
 (**WORKBUDDY** / **WORKBUDDY AI**) — the one fact that must not be guessed,
-since the two products’ credits are not convertible and their accounts are
+since the two products' credits are not convertible and their accounts are
 not interchangeable.
 
-- Each row shows the **account name, remaining credit**, and a **Test** and **Remove** button.
+- A **⋮ menu** sits at the right of each head line (the Command Code account row's
+  shape): enable/disable, test, rename, and remove all live behind it. Enable and
+  disable write **immediately** — "stop using this account now" is not a change to
+  hold until Save. Removing asks inline, in the row's own confirm bar, instead of
+  through a system dialog that some shells suppress entirely (which made Remove
+  look like a broken button).
+- A **balance / cycle meter** sits under the head line: a progress bar with
+  "balance / cap" when the upstream declared one, and the balance alone with a
+  note when it did not.
+- **Rows fold.** The head line is always visible (status dot, name, product, and
+  either the balance or the current state); opening it reveals the rest.
+- Open, a row shows the **balance, the state, the token expiry**, and three
+  actions: **Disable/Enable**, **Test**, **Remove**.
+- **Disable is your override for everything rotation decides on its own**: an
+  account that is benched, one judged to have an expired sign-in, or simply one
+  you do not want spent. **Enabling it again is also the only way back for an
+  account the plugin wrote off** — that flag is cleared by the same press.
 - The **Add account** button asks which product first, then opens that product's sign-in dialog.
-- The block ends with the **per-product totals**, side by side and never added together.
-- A rate-limited or out-of-quota account replaces its balance with when it returns ("rate limited · retry in 3 h"); an account added by a pasted token shows "sign-in expired" once its token lapses.
+- **"Open sign-in page" hands the URL to your system browser** — the session and password manager the sign-in needs live there. The plugin tries, in order: `window.open`, then the host process's own operating-system hand-off (the one that works on the desktop), then DSH's right-sidebar browser, then an `<a target=_blank>` click. **When all four fail it shows the address to copy**, rather than leaving a button that appears to do nothing.
+- The group ends with the **per-product total credit** tiles, side by side and never added together.
+- A rate-limited or out-of-quota account says so in its head line ("rate limited · retry in 3 h"); an account added by a pasted token shows "sign-in expired" once its token lapses.
 
-The **models** below stay per product, each with its own grey heading, a refresh
-button and the list's provenance (live / saved / built-in). Each row shows the model
-name, its promotion badges and rate, and its context window.
+The **models** below stay per product, each group with a refresh button and the
+list's provenance (live / saved / built-in). Each row shows the model name, its
+promotion badges and rate, and its context-window switch.
 
 A model that reasons but declares no levels gets a **Detect** button in its row.
 It asks first, inline, because a detection sends real requests against your own
@@ -83,27 +116,42 @@ reason has nothing to detect.
 > The button needs no separate opt-in: the confirmation *is* that detection's
 > authorization. (The setting only gates the automatic sweep.)
 
-**The context length is switchable**: when the upstream declares more than one
-length for a model (200K / 1M, say), the row carries a sliding switch. Choosing
-one **changes the request** — the plugin reports the chosen length to DSH, which
-derives the model's output ceiling and context trimming from it. A model with a
-single declared window gets no switch, because there is nothing to choose.
+Every row's probe result, Detect button and context-window figure occupy three
+fixed columns, so they line up down the page instead of drifting with each row's
+contents.
 
-**Add account** first asks which product, then which sign-in method:
+**Show only selected models.** The filter row above the model list holds a
+**dropdown multi-select** (a "Choose models" pill, the same control the Command
+Code provider uses) and a switch.
 
-- **Scan to sign in** (CN only): a QR code to scan with the phone app, with an **Open sign-in page** button below it that opens the web sign-in in the **system browser**.
-- **Sign-in token**: paste the console's token (the `AccessToken` string starting with `eyJ`). The plugin reads the name, uid, and expiry out of it and stores it **on this machine only**.
+- The pill opens a **searchable checkbox menu**: type to filter by id or name,
+  click a row to toggle it, and the picks commit when the menu **closes** — one
+  host write per visit instead of one per click.
+- With the switch OFF the menu edits the **whole catalog** (the host treats "off"
+  and "everything visible" as one state, so there is no stored list to edit), and
+  picking anything **turns the switch on by itself** — otherwise unticking one
+  model would hide the entire catalog through a list that only ever named it.
+- With the switch ON only the ticked models reach DSH's model picker, and the row
+  shows "N of M selected".
+- **The filter is staged**, exactly as Command Code stages it: edits stay on the
+  page until the **save bar** at the bottom writes them, and Discard puts the
+  product back to what the host reports.
+- **The last tick cannot be removed**: an empty list means "no filter" to the
+  host, so clearing it would reopen the whole catalog.
+- A model the filter excludes keeps its row (context window and detection still
+  work) and gains a **small dot** marking it as excluded from the picker.
+- A host too old to know this write says so explicitly ("restart DSH Desktop and
+  try again") and **keeps the edit staged** rather than losing it.
 
-> **The international product shows no QR entry**: no mobile service completes its QR flow, so its routes are **Sign in on the web** (opens its console) and the pasted token.
->
-> The browser route opens that product's login page automatically and then waits: once the sign-in completes on the web, the account is added here on its own, with no token to copy.
+This filter and the per-model hide are **two separate preferences over two
+separate lists**: unticking means "not in this filter", while the hide-list keeps
+working, and when the two disagree **hidden wins** — a hidden model does not come
+back by being ticked. No bar is drawn when the capacity cannot be stated (an
+uncapped account, or an upstream that declared none); the balance is shown alone.
 
-> **A pasted token cannot renew itself** (it carries no refresh token). When it expires, paste a fresh one; adding the same account again updates its token instead of creating a duplicate.
+### Remaining credit in the composer
 
-
-### Floating account window
-
-A **floating window** sits in the top-right corner of the conversation, showing each version's accounts in use and their remaining credit; a set-aside account shows "retry in N min". The arrow in its corner collapses it, and the collapsed state is remembered. Turn it off from the settings card if you do not want it.
+While the session's model is a **WorkBuddy** one, a small badge appears at the far right of the row under the input box — the same row that carries token usage, cache-hit rate and speed: `WorkBuddy: 5,266` (or `WorkBuddy AI: …`). It states that product's remaining credit, read from the same store the sidebar card and the dashboard use, so the three surfaces can never disagree. It disappears for any other provider (that quota cannot be spent) and while the product is signed out or its balance has not been read — an absent figure, never a zero.
 
 - **Rate**: every model name carries its credits multiplier (e.g. `GLM-5.2 · x0.79`, `Hy3 · x0.00`) in both the `/model` popup and the composer's model dropdown. The rate is display-only and never affects requests.
 

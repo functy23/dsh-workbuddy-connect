@@ -1,7 +1,7 @@
 /**
  * The network half of the account pool: capturing the desktop app's sign-in,
  * minting QR sign-ins, and answering "who is this variant right now" for the
- * catalog, the card, and the floating window.
+ * catalog, the card, and the composer badge.
  *
  * The split from {@link module:dsh-workbuddy-connect/account-pool} is
  * deliberate: the pool is pure state that tests can drive directly, while
@@ -15,6 +15,7 @@ import { accountIdOf, credentialAccountId, credentialOf } from './account-pool.t
 import { profileFromToken } from './account-token.ts'
 import type { WorkBuddyCredential, WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyQrLogin } from './qr-login.ts'
+import type { WorkBuddyUsageSummary } from './usage-store.ts'
 import { regionOf } from './upstream.ts'
 import type { WorkBuddyUpstreamClient } from './upstream.ts'
 import type { WorkBuddyVariant } from './variants.ts'
@@ -46,6 +47,14 @@ export interface WorkBuddyWebAccount {
   available: boolean
   /** Remaining credit, when the last lookup succeeded. */
   credits?: number
+  /**
+   * The cycle's capacity, when the upstream declared one.
+   *
+   * Optional because "no cap" and "the answer carried none" are both real: a
+   * renderer shows a used/total pair only when this is present, and the bare
+   * remaining figure otherwise.
+   */
+  creditsTotal?: number
   creditsError?: string
   /** When `credits` was fetched, epoch ms. */
   creditsAtMs?: number
@@ -82,13 +91,47 @@ export interface WorkBuddyAccountServiceOptions {
   client: Pick<WorkBuddyUpstreamClient, 'fetchCredits' | 'refreshToken'>
   qr: WorkBuddyQrLogin
   logger?: { warn(...args: unknown[]): void }
+  /**
+   * This account's request tally, when the plugin has counted any.
+   *
+   * Read per snapshot rather than cached: the tally changes with every answered
+   * request, and the card is the only consumer.
+   */
+  usageFor?: (accountId: string) => WorkBuddyUsageSummary | undefined
+  /**
+   * Called when the desktop app's credential could not be read at all.
+   *
+   * The read is best-effort everywhere it is used for IDENTITY: whether the app
+   * is signed in decides which pool member is primary, and nothing about the
+   * card's ability to answer depends on it. It used to throw out of
+   * {@link WorkBuddyAccountService.desktopIdentity} and take the whole status
+   * document with it — on the international variant that meant a 500 on the AI
+   * status route, so the page was handed no control key and *every* action,
+   * including the only way in (paste a token), answered "request failed".
+   *
+   * The diagnosis is not swallowed: it is handed here so the card can show which
+   * file, binary or region is wrong, and the caller keeps its own record.
+   */
+  onDesktopReadError?: (message: string) => void
   /** Injectable clock, for tests. */
   now?: () => number
 }
 
 /** One cached credit lookup. */
 interface CreditEntry {
+  /** What is left, summed over the packages that answered. */
   total?: number
+  /** What the cycle has consumed, when the upstream stated it. */
+  used?: number
+  /**
+   * The cycle's capacity, summed the same way, when the upstream declared one.
+   *
+   * Absent for an uncapped account and for one whose answer carried no capacity:
+   * both mean "there is no total to state", which is a different fact from a
+   * total of zero, so a renderer shows the remaining figure alone rather than a
+   * "used / total" pair built from a zero.
+   */
+  size?: number
   error?: string
   atMs: number
 }
@@ -97,7 +140,7 @@ interface CreditEntry {
  * Owns the pool's network-facing behaviour for one variant.
  *
  * Credit figures are cached per account for a minute. That matters because the
- * floating window polls while a conversation is open, and an uncached lookup
+ * composer badge polls while a conversation is open, and an uncached lookup
  * would mean one billing request per account per poll — real traffic against
  * the user's own quota, for a number that changes slowly.
  */
@@ -108,6 +151,8 @@ export class WorkBuddyAccountService {
   private readonly client: WorkBuddyAccountServiceOptions['client']
   private readonly qr: WorkBuddyQrLogin
   private readonly logger: WorkBuddyAccountServiceOptions['logger']
+  private readonly usageFor: WorkBuddyAccountServiceOptions['usageFor']
+  private readonly onDesktopReadError: WorkBuddyAccountServiceOptions['onDesktopReadError']
   private readonly now: () => number
   private readonly credits = new Map<string, CreditEntry>()
   private readonly inflight = new Map<string, Promise<CreditEntry>>()
@@ -119,6 +164,8 @@ export class WorkBuddyAccountService {
     this.client = options.client
     this.qr = options.qr
     this.logger = options.logger
+    this.usageFor = options.usageFor
+    this.onDesktopReadError = options.onDesktopReadError
     this.now = options.now ?? (() => Date.now())
   }
 
@@ -131,12 +178,18 @@ export class WorkBuddyAccountService {
    * the app leaves the captured account in place, which is the behaviour the
    * whole feature depends on.
    *
+   * The write is marked as a *sync*, so re-reading a file that has not moved on
+   * cannot resurrect an account the user disabled, clear a benching, revive a
+   * dead session, or put the file's stale token back over one the plugin
+   * refreshed itself. The file is polled every thirty seconds; a poll is not a
+   * sign-in.
+   *
    * @returns the captured account, or undefined when the app is not signed in.
    */
   async captureDesktop(): Promise<WorkBuddyAccount | undefined> {
     const credential = await this.store.desktopCredential()
     if (credential === undefined) return undefined
-    return this.capture(credential)
+    return this.capture(credential, true)
   }
 
   /**
@@ -146,7 +199,7 @@ export class WorkBuddyAccountService {
    * refuses a credential belonging to the other product, and the QR flow checks
    * its own answer before it gets this far.
    */
-  capture(credential: WorkBuddyCredential): WorkBuddyAccount {
+  capture(credential: WorkBuddyCredential, syncDesktop = false): WorkBuddyAccount {
     const result = this.pool.upsert({
       uid: credential.uid,
       ...credential.enterpriseId === undefined ? {} : { enterpriseId: credential.enterpriseId },
@@ -157,13 +210,28 @@ export class WorkBuddyAccountService {
       expiresAtMs: credential.expiresAtMs,
       ...credential.refreshExpiresAtMs === undefined ? {} : { refreshExpiresAtMs: credential.refreshExpiresAtMs },
       origin: 'desktop',
+      // Read by the caller: a background re-read must not undo state, while a
+      // real sign-in is allowed to.
+      sync: syncDesktop,
     })
     return result.account
   }
 
-  /** The desktop app's account identity, when the app is signed in. */
+  /**
+   * The desktop app's account identity, when the app is signed in.
+   *
+   * Never throws. A desktop read that fails (no decryption binary on this
+   * platform, a credential for the other region, an unreadable file) is a
+   * diagnosis about the app, not a reason the pool cannot be described: the
+   * pool's own members still answer, and on the international variant the
+   * account has to be ADDED through this page in the first place. The failure is
+   * reported through {@link WorkBuddyAccountServiceOptions.onDesktopReadError}.
+   */
   async desktopIdentity(): Promise<string | undefined> {
-    const credential = await this.store.desktopCredential()
+    const credential = await this.store.desktopCredential().catch((error: unknown) => {
+      this.onDesktopReadError?.(error instanceof Error ? error.message : String(error))
+      return undefined
+    })
     return credential === undefined ? undefined : credentialAccountId(credential)
   }
 
@@ -240,7 +308,18 @@ export class WorkBuddyAccountService {
     const run = (async (): Promise<CreditEntry> => {
       try {
         const answer = await this.client.fetchCredits(credentialOf(account))
-        const entry: CreditEntry = { total: answer.total, atMs: this.now() }
+        // A capacity is only summable when every contributing package declared
+        // one. A mix — or an uncapped account — leaves the pair unstatable
+        // rather than reporting a total that silently ignores the packages
+        // which had none.
+        const capacity = answer.unlimited === true || answer.accounts.some(entry => entry.size <= 0)
+          ? undefined
+          : answer.accounts.reduce((sum, entry) => sum + entry.size, 0)
+        const entry: CreditEntry = {
+          total: answer.total,
+          ...capacity === undefined ? {} : { size: capacity },
+          atMs: this.now(),
+        }
         this.credits.set(account.id, entry)
         return entry
       } catch (error: unknown) {
@@ -265,9 +344,9 @@ export class WorkBuddyAccountService {
   }
 
   /**
-   * The snapshot the card's account tab and the floating window render.
+   * The snapshot the card's account tab renders.
    *
-   * @param withCredits - whether to include per-account balances. The floating
+   * @param withCredits - whether to include per-account balances. The card
    *   window asks for them; a write confirmation does not need them and should
    *   not pay for N billing requests.
    * @param forceCredits - bypass the credit cache.
@@ -292,8 +371,11 @@ export class WorkBuddyAccountService {
         enabled: account.enabled,
         available: this.pool.isAvailable(account, this.now()),
         ...credits?.total === undefined ? {} : { credits: credits.total },
+        ...credits?.used === undefined ? {} : { creditsUsed: credits.used },
+        ...credits?.size === undefined ? {} : { creditsTotal: credits.size },
         ...credits?.error === undefined ? {} : { creditsError: credits.error },
         ...credits === undefined ? {} : { creditsAtMs: credits.atMs },
+        ...this.usageFor?.(account.id) === undefined ? {} : { usage: this.usageFor(account.id) },
         expiresAtMs: account.expiresAtMs,
         ...account.sessionDead === true ? { sessionDead: true } : {},
         ...account.cooldown === undefined ? {} : {

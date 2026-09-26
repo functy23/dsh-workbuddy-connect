@@ -20,6 +20,14 @@ const VERSION_DEFINE = { __DSH_WORKBUDDY_VERSION__: JSON.stringify(PACKAGE_VERSI
  * `react-dom` belongs here because the client half uses a portal to render over
  * the conversation, and bundling a second copy of ReactDOM would give that
  * portal a different reconciler than the one painting the page.
+ *
+ * `dsh-client-ui-primitives` is here for a sharper reason than size: it is a
+ * PLATFORM SEED module the shell installs into the module table, and it ships its
+ * own CSS modules. Bundling it would try to inline those stylesheets (which the
+ * shell has already applied, from the shell's own copy) and would give the page
+ * a second set of component identities — a duplicated `Button` renders under a
+ * different CSS-module scope than the one the rest of the settings UI uses. It
+ * must be `require`d by name at runtime.
  */
 const CLIENT_EXTERNALS = [
   'react',
@@ -27,6 +35,7 @@ const CLIENT_EXTERNALS = [
   'react-dom',
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-ui-slots',
+  '@deepseek-ai/dsh-client-ui-primitives',
   // Declared by the settings page's slot; keeping it external matches how the
   // other client-only packages are handled.
   '@deepseek-ai/dsh-client-ui-settings/client',

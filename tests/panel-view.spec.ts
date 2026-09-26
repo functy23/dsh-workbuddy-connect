@@ -37,7 +37,6 @@ function signedIn(overrides: Partial<Extract<WorkBuddyWebStatus, { status: 'sign
         lastUsedAtMs: 0,
         addedAtMs: 0,
       }],
-      floatingWindow: false,
     },
     ...overrides,
   }
@@ -45,6 +44,75 @@ function signedIn(overrides: Partial<Extract<WorkBuddyWebStatus, { status: 'sign
 
 /** The empty document a host answers with before any account exists. */
 const SIGNED_OUT: WorkBuddyWebStatus = { status: 'signed-out' }
+
+describe('the sidebar credit line', () => {
+  /**
+   * The card states the BALANCE, named by the product, on ONE line per product —
+   * no ring, no "used / total" pair, no bar.
+   *
+   * The figure that used to dominate was the capacity: with two accounts of
+   * 2800 + 3400 the card led with "/ 6200", which is not the number anyone opens
+   * the sidebar for. The balance (2373 + 2893) is; the capacity is still on the
+   * dashboard, where a bar earns its space.
+   */
+  it('reports the summed balance per product, with the capacity kept for the dashboard', () => {
+    /** One signed-in document whose pool is exactly the given account rows. */
+    const withAccounts = (accounts: readonly Record<string, unknown>[]): WorkBuddyWebStatus => ({
+      status: 'signed-in',
+      models: [],
+      accounts: { accounts },
+    }) as unknown as WorkBuddyWebStatus
+    const base = { uid: 'u', name: 'A', origin: 'desktop', domain: 'copilot.tencent.com', renewable: true, enabled: true, available: true, expiresAtMs: 0, lastUsedAtMs: 0, addedAtMs: 0 }
+    const view = buildPanelView({
+      snapshot: {
+        statuses: {
+          [CARD_VARIANTS[0]!.id]: withAccounts([
+            { ...base, id: 'a:1', credits: 2373, creditsTotal: 2800 },
+            { ...base, id: 'a:2', credits: 2893, creditsTotal: 3400 },
+          ]),
+          [CARD_VARIANTS[1]!.id]: undefined,
+        },
+        loading: false,
+        fetchedAt: 1,
+      },
+    })
+    const cn = view.footProducts[0]!
+    // The line shows this: the sum of the accounts' remaining credit…
+    expect(cn.creditsRemaining).toBe(5266)
+    // …never the capacities' sum, which is only a dashboard figure.
+    expect(cn.creditsCapacity).toBe(6200)
+    expect(cn.creditsRemaining).not.toBe(cn.creditsCapacity)
+  })
+
+  it('reads the display style from the document, and defaults when it is absent', () => {
+    const view = (style?: 'remaining' | 'usage') => buildPanelView({
+      snapshot: {
+        statuses: {
+          [CARD_VARIANTS[0]!.id]: { ...signedIn(), ...style === undefined ? {} : { sidebarCreditStyle: style } } as WorkBuddyWebStatus,
+          [CARD_VARIANTS[1]!.id]: undefined,
+        },
+        loading: false,
+        fetchedAt: 1,
+      },
+    })
+    // Absent (an older host, or a document that cannot state it): the card keeps
+    // its default shape rather than blanking the line.
+    expect(view(undefined).creditStyle).toBe('remaining')
+    expect(view('remaining').creditStyle).toBe('remaining')
+    expect(view('usage').creditStyle).toBe('usage')
+  })
+
+  it('names the figure in the label, in both languages', () => {
+    // The label carries the meaning ("WorkBuddy 剩余额度"), which is what lets a
+    // bare number sit beside it without a column header. The Chinese side is read
+    // through the same translator the card uses, backed by its own dictionary.
+    const zh = panelTranslator((key, params = {}) => String(PANEL_COPY_ZH[key as keyof typeof PANEL_COPY_ZH])
+      .replace(/\{(\w+)\}/gu, (_match, name: string) => String(params[name as keyof typeof params] ?? '')))
+    expect(zh('creditRemainingLabel', { product: 'WorkBuddy AI' })).toBe('WorkBuddy AI 剩余额度')
+    expect(panelTranslator(undefined)('creditRemainingLabel', { product: 'WorkBuddy AI' }))
+      .toBe('WorkBuddy AI remaining')
+  })
+})
 
 describe('buildPanelView', () => {
   it('reports one block per product, in display order', () => {
@@ -66,7 +134,7 @@ describe('buildPanelView', () => {
           'workbuddy-ai': signedIn({
             accounts: {
               accounts: [{ ...signedIn().status === 'signed-in' ? {} : {}, id: 'b1', uid: 'u2', name: 'Second', origin: 'desktop', domain: 'x', renewable: true, enabled: true, available: true, credits: 250, expiresAtMs: 0, lastUsedAtMs: 0, addedAtMs: 0 }],
-              floatingWindow: false,
+
             },
           }),
         },
@@ -89,7 +157,7 @@ describe('buildPanelView', () => {
           workbuddy: signedIn({
             accounts: {
               accounts: [{ id: 'a1', uid: 'u1', name: 'First', origin: 'desktop', domain: 'x', renewable: true, enabled: true, available: true, expiresAtMs: 0, lastUsedAtMs: 0, addedAtMs: 0 }],
-              floatingWindow: false,
+
             },
           }),
         },
@@ -113,7 +181,7 @@ describe('buildPanelView', () => {
               accounts: [
                 { id: 'a1', uid: 'u1', name: 'Benched', origin: 'qr', domain: 'x', renewable: true, enabled: true, available: false, credits: 5, expiresAtMs: 0, lastUsedAtMs: 0, addedAtMs: 0, cooldown: { untilMs: future, reason: 'rate', strikes: 1 } },
               ],
-              floatingWindow: false,
+
             },
           }),
         },
@@ -292,7 +360,17 @@ describe('panel copy', () => {
     // product name.
     const untranslated = Object.keys(PANEL_COPY_EN).filter(key =>
       PANEL_COPY_ZH[key as keyof typeof PANEL_COPY_EN] === PANEL_COPY_EN[key as keyof typeof PANEL_COPY_EN]
-      && !['nav', 'accountCount', 'creditTotal', 'modelCount', 'creditPending'].includes(key))
+      // Exempt: product names spelled the same in both languages, and
+      // language-neutral numeric formats (a "used / total" pair carries no words
+      // to translate — translating it would mean inventing a different
+      // separator per language for no reader's benefit).
+      && ![
+        'nav', 'accountCount', 'creditTotal', 'modelCount', 'creditPending', 'creditUsed',
+        // The composer badge is "product: figure" in both languages: a colon and
+        // a grouped number carry no words, and translating the separator would
+        // mean inventing a different punctuation per language for no reader.
+        'creditBadgeLabel',
+      ].includes(key))
     expect(untranslated).toEqual([])
   })
 

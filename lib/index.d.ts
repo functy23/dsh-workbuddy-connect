@@ -107,6 +107,20 @@ type WorkBuddySignedOutReasonCode =
 'electron-path-invalid' |
 /** Discovery could not finish: tool missing, timeout, output overflow, unreadable plist. */
 'electron-discovery-incomplete';
+/**
+ * The two ways the sidebar card may state a product's credit.
+ *
+ * Declared here rather than with the host's config schema because BOTH halves
+ * need the closed set: the host validates what it writes, and the browser picks
+ * a rendering from what it reads — with one shared definition, a third style
+ * could not be added on one side alone.
+ *
+ * - `'remaining'`: one line per product, "WorkBuddy 剩余额度 5,266" — the figure
+ *   most readers open the sidebar for, with no bar;
+ * - `'usage'`: the reference provider card's shape, a "used / total" pair over a
+ *   bar of that ratio, which states the cycle's capacity as well as the balance.
+ */
+type WorkBuddySidebarCreditStyle = 'remaining' | 'usage';
 //#endregion
 //#region src/desktop-credential-protection.d.ts
 /** The four states a desktop auth document can be read as. */
@@ -540,11 +554,23 @@ interface WorkBuddyCreditAccount {
   packageName: string;
   remain: number;
   size: number;
+  /**
+   * Credits this package has consumed this cycle, when the upstream stated it.
+   *
+   * Carried rather than derived from `size - remain`: the two endpoints word it
+   * independently (`CycleCapacityUsed` on the personal one, `used_num` on the
+   * enterprise one), and a package can report a size with no used figure at all.
+   * A renderer that showed a subtraction as "used" would be inventing a number
+   * the upstream never sent.
+   */
+  used?: number;
   unlimited?: true;
 }
 /** Aggregated credit answer for one credential. */
 interface WorkBuddyCredits {
   total: number;
+  /** Summed usage across the packages that stated one, when any did. */
+  used?: number;
   accounts: readonly WorkBuddyCreditAccount[];
   /**
    * The account's cycle quota is uncapped (`limitNum === -1` on the CN
@@ -681,7 +707,16 @@ declare class WorkBuddyUpstreamClient {
   constructor(options?: WorkBuddyUpstreamClientOptions);
   /** POST the chat endpoint; a successful answer is the raw SSE response. */
   chatStream(credential: WorkBuddyCredential, bodyJson: string, signal?: AbortSignal): Promise<WorkBuddyChatResult>;
-  /** POST the token-refresh endpoint; the caller merges the outcome. */
+  /**
+   * POST the token-refresh endpoint; the caller merges the outcome.
+   *
+   * A failure arrives as a {@link WorkBuddyRefreshFailure} — carrying the same
+   * classification chat failures get — rather than as a bare `Error`. The
+   * distinction the caller needs is *definitive versus not*: "the upstream
+   * refused this refresh token" is evidence the session is really gone, while a
+   * timeout, a 5xx, or a dropped connection is evidence about the network. Only
+   * the first may cost the user an account.
+   */
   refreshToken(credential: WorkBuddyCredential): Promise<WorkBuddyRefreshOutcome>;
   /**
    * GET the personal model catalog.
@@ -893,6 +928,14 @@ interface WorkBuddyVariant {
   contextFilename: string;
   /** Basename of the plugin-owned probe-record file under `$DSH_HOME`. */
   probeFilename: string;
+  /**
+   * Basename of the plugin-owned request-usage file under `$DSH_HOME`.
+   *
+   * One per variant like the pools and catalogs: the two products have separate
+   * subscriptions, so one product's request tally must never be read as the
+   * other's.
+   */
+  usageFilename: string;
   /**
    * Basename of the plugin-owned saved-catalog file under `$DSH_HOME`.
    *
@@ -1298,6 +1341,53 @@ declare class WorkBuddyProbeStore {
   private persist;
 }
 //#endregion
+//#region src/usage-store.d.ts
+/**
+ * One request's usage, as the upstream reported it.
+ *
+ * Every token field is optional: the upstream's usage block varies by model and
+ * has changed shape before, so a reader that demanded one spelling would either
+ * throw or silently zero the others.
+ */
+interface WorkBuddyRequestUsage {
+  /** Prompt tokens the upstream billed (cache hits included, per OpenAI). */
+  promptTokens?: number;
+  /** Tokens the model produced. */
+  completionTokens?: number;
+  /** Prompt tokens the upstream served from its cache. */
+  cacheReadTokens?: number;
+  /** Prompt tokens written INTO the cache (some upstreams bill these apart). */
+  cacheWriteTokens?: number;
+  /** Model id the request named, for diagnostics. */
+  model?: string;
+}
+/** One account's running tally. */
+interface WorkBuddyUsageCounters {
+  /** Requests that reached the upstream through this account. */
+  requests: number;
+  /** Requests whose answer carried a usage block at all. */
+  reported: number;
+  promptTokens: number;
+  completionTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** First request counted in this tally, epoch ms. */
+  sinceMs: number;
+  /** Most recent counted request, epoch ms. */
+  lastAtMs: number;
+}
+/** What the card reads for one account. */
+interface WorkBuddyUsageSummary extends WorkBuddyUsageCounters {
+  /**
+   * Cache-read share of the prompt (`cacheRead / prompt`), when both numbers are
+   * known and the prompt was non-zero.
+   *
+   * Omitted — not zeroed — when no answer ever carried a cache field: see the
+   * module note.
+   */
+  cacheHitRate?: number;
+}
+//#endregion
 //#region src/shim.d.ts
 /** Minimal logger surface the plugin context already provides. */
 interface ShimLogger {
@@ -1477,11 +1567,27 @@ interface WorkBuddyAccount {
   cooldown?: WorkBuddyCooldown;
   /**
    * Set when the upstream refused the session outright and the refresh token
-   * could not revive it. Kept as a flag rather than a deletion: the account
-   * still shows in the list (so the user can see what happened and delete it),
-   * and it never participates in rotation again.
+   * could not revive it *definitively*. Kept as a flag rather than a deletion:
+   * the account still shows in the list (so the user can see what happened and
+   * delete it), and it never participates in rotation again.
+   *
+   * A transient failure while refreshing (a timeout, a 5xx, a dropped
+   * connection) never sets this: it is not evidence that the sign-in is gone,
+   * and burning the account for it left the user with no way back. Turning the
+   * account back on — {@link WorkBuddyAccountPool.setEnabled} with `true` — is
+   * the manual override, for the case where the session really is gone but the
+   * upstream has since accepted it again.
    */
   sessionDead?: boolean;
+  /**
+   * Consecutive cooldown-causing failures, cleared by the first success.
+   *
+   * Kept apart from {@link WorkBuddyCooldown.strikes} on purpose: the cooldown
+   * is gone by the time the account is eligible again, so a streak stored only
+   * inside it restarted at 1 on every later failure and the backoff schedule
+   * never grew past its base. This is the counter the schedule actually needs.
+   */
+  failureStreak?: number;
   addedAtMs: number;
   updatedAtMs: number;
 }
@@ -1496,6 +1602,22 @@ interface WorkBuddyAccountInput {
   expiresAtMs: number;
   refreshExpiresAtMs?: number;
   origin: WorkBuddyAccountOrigin;
+  /**
+   * This write is a background re-read of a sign-in source, not a user action.
+   *
+   * A sweep re-reads the desktop app's file every thirty seconds and upserts
+   * what it finds. That is a *duplicate* of a credential the pool already
+   * holds, and treating it like a fresh sign-in undid everything the pool had
+   * learned in the meantime: a disabled account came back on, a benching was
+   * dropped, a dead session was resurrected, and — worst — the tokens were
+   * overwritten with the file's older copy, discarding a refresh the plugin had
+   * performed itself.
+   *
+   * A sync therefore only refreshes what a re-read can legitimately tell us
+   * (the nickname), keeps the user's enabled flag and every health field, and
+   * adopts the tokens only when the source's copy is demonstrably *newer*.
+   */
+  sync?: boolean;
 }
 /** Outcome of an upsert, for the "this account is already in the pool" notice. */
 interface WorkBuddyUpsertResult {
@@ -1538,6 +1660,14 @@ declare class WorkBuddyAccountPool {
   private readonly variant;
   private readonly path;
   private accounts;
+  /**
+   * Highest stamp handed out by {@link next}, seeded lazily from the rows.
+   *
+   * Wall-clock based so it stays comparable with the `lastUsedAtMs` values on
+   * disk after a restart; only the *strictly increasing* part is what the
+   * single-tick case needs.
+   */
+  private claimSeq;
   constructor(options: WorkBuddyAccountPoolOptions);
   /** Resolved pool-file path, for diagnostics and tests. */
   filePath(): string;
@@ -1560,6 +1690,34 @@ declare class WorkBuddyAccountPool {
    * the list never rewrites the user's mental model of where it came from.
    */
   upsert(input: WorkBuddyAccountInput): WorkBuddyUpsertResult;
+  /**
+   * Adopt the tokens of a *newer* copy of a sign-in the pool already holds.
+   *
+   * The comparison is by access-token expiry, which is the only ordering a
+   * source file offers: a token minted later expires later. An equal or older
+   * stamp is a copy the pool has already surpassed — which is exactly what the
+   * desktop file is after the plugin refreshed the account itself.
+   *
+   * A copy with no expiry at all (0, "the source did not say") is treated as
+   * *newer* than one the pool also cannot date, because in that case there is
+   * nothing to order by and the file is the live sign-in.
+   */
+  private adoptTokens;
+  /**
+   * A background re-read of a sign-in source: identity and freshness, no health.
+   *
+   * Deliberately does NOT touch `enabled`, `cooldown`, `sessionDead`, or a
+   * benching's strike count. Every one of those is state the pool learned from
+   * the upstream or from the user, and a file that says "this account signed in
+   * at some point" is not evidence about any of them.
+   */
+  private syncExisting;
+  /**
+   * A sign-in the user performed (QR, pasted token, or a desktop file that has
+   * actually moved forward): the cure for every benching, including a dead
+   * session — the tokens are new, so nothing about the old state applies.
+   */
+  private reSignIn;
   /** Merge a token refresh into a stored account. */
   updateTokens(id: string, tokens: {
     accessToken: string;
@@ -1570,7 +1728,15 @@ declare class WorkBuddyAccountPool {
   }): WorkBuddyAccount | undefined;
   /** Remove one account. */
   remove(id: string): boolean;
-  /** Enable or disable one account. */
+  /**
+   * Enable or disable one account.
+   *
+   * Enabling is also the manual override for a session the plugin judged dead:
+   * the flag is a conclusion drawn from one upstream refusal plus one failed
+   * refresh, and the user saying "use this account" outranks it. Without that,
+   * a dead account was unreachable — rotation skipped it, only a successful
+   * refresh could clear the flag, and no request would ever try one.
+   */
   setEnabled(id: string, enabled: boolean): boolean;
   /** Set or clear the user's label for one account. */
   setLabel(id: string, label: string | undefined): boolean;
@@ -1579,36 +1745,66 @@ declare class WorkBuddyAccountPool {
    * ones, so a stale client cannot drop an account it did not know about.
    */
   reorder(ids: readonly string[]): void;
-  /** Mark an account as having just served a request. */
-  markUsed(id: string): void;
   /**
    * Bench an account.
    *
-   * `strikes` increments when the previous benching is still in force (the
-   * account failed again as soon as it was retried), and restarts at 1
-   * otherwise. That is what makes the backoff grow under sustained limiting
-   * and reset once the account has genuinely recovered.
+   * The account's own failure streak decides the wait, so a limit that keeps
+   * coming back is answered with a longer benching each time and a single
+   * success puts the schedule back to its base.
    *
    * @param retryAfterMs - upstream's own `Retry-After`, which wins over the
    *   schedule: the provider knows its window better than any backoff we pick.
    */
   cooldown(id: string, reason: WorkBuddyCooldownReason, hintMs?: number): WorkBuddyCooldown | undefined;
-  /** Clear a benching after a success. */
+  /**
+   * Clear a benching after a success.
+   *
+   * The failure streak goes with it: a success is the evidence that whatever
+   * was failing has stopped, and the next failure deserves the base backoff
+   * rather than the tail of a schedule earned by the previous outage.
+   *
+   * The flag is the caller's to hand over, but this is a *state* cleanup rather
+   * than a cooldown one, so it also runs when there is nothing to clear.
+   */
   clearCooldown(id: string): void;
-  /** Mark an account's session as permanently dead. */
+  /**
+   * Mark an account's session as dead.
+   *
+   * Only for a *definitive* refusal: the account has earned this flag when the
+   * upstream rejected its credential and the refresh that followed was itself
+   * refused. A refresh that failed because the network did is not evidence
+   * about the session, and spending the account on it left the user with an
+   * account they could only delete.
+   */
   markSessionDead(id: string): void;
   /** Whether an account may be picked right now. */
   isAvailable(account: WorkBuddyAccount, now?: number): boolean;
   /**
-   * The next account to try, excluding ids already tried in this request.
+   * The next account to try, excluding ids already attempted by this caller.
    *
    * Least-recently-used wins, with pool order as the tiebreak. LRU rather than
    * round-robin because a restart, a new sign-in, or a user reorder all reset
    * a cursor but leave "when did this account last work" meaningful.
    *
+   * **Claiming is synchronous, and that is the point.** Selection used to be a
+   * pure read plus a later `Date.now()` write from the caller, so two
+   * conversations started in the same millisecond both looked at the same
+   * snapshot and both picked the same account — precisely when spreading the
+   * load matters, because that is the case where one 429 is about to fail the
+   * other user message too. A persistent counter, stamped here before anything
+   * is awaited, makes every claim distinct whatever the clock resolution is.
+   *
    * @param tried - identities already attempted for the request in flight.
+   * @param now - wall clock for availability decisions only.
    */
   next(tried: ReadonlySet<string>, now?: number): WorkBuddyAccount | undefined;
+  /**
+   * A strictly increasing stamp for one claim, seeded from the wall clock.
+   *
+   * Strictly increasing even when the clock stands still or steps backwards, so
+   * "most recently claimed" stays a real ordering.
+   */
+  private claimClock;
   /**
    * The account the plugin presents as "this variant's account" — the one used
    * for the model catalog, the credit figure on the card, and reasoning probes.
@@ -1739,6 +1935,14 @@ interface WorkBuddyWebAccount {
   available: boolean;
   /** Remaining credit, when the last lookup succeeded. */
   credits?: number;
+  /**
+   * The cycle's capacity, when the upstream declared one.
+   *
+   * Optional because "no cap" and "the answer carried none" are both real: a
+   * renderer shows a used/total pair only when this is present, and the bare
+   * remaining figure otherwise.
+   */
+  creditsTotal?: number;
   creditsError?: string;
   /** When `credits` was fetched, epoch ms. */
   creditsAtMs?: number;
@@ -1775,12 +1979,46 @@ interface WorkBuddyAccountServiceOptions {
   logger?: {
     warn(...args: unknown[]): void;
   };
+  /**
+   * This account's request tally, when the plugin has counted any.
+   *
+   * Read per snapshot rather than cached: the tally changes with every answered
+   * request, and the card is the only consumer.
+   */
+  usageFor?: (accountId: string) => WorkBuddyUsageSummary | undefined;
+  /**
+   * Called when the desktop app's credential could not be read at all.
+   *
+   * The read is best-effort everywhere it is used for IDENTITY: whether the app
+   * is signed in decides which pool member is primary, and nothing about the
+   * card's ability to answer depends on it. It used to throw out of
+   * {@link WorkBuddyAccountService.desktopIdentity} and take the whole status
+   * document with it — on the international variant that meant a 500 on the AI
+   * status route, so the page was handed no control key and *every* action,
+   * including the only way in (paste a token), answered "request failed".
+   *
+   * The diagnosis is not swallowed: it is handed here so the card can show which
+   * file, binary or region is wrong, and the caller keeps its own record.
+   */
+  onDesktopReadError?: (message: string) => void;
   /** Injectable clock, for tests. */
   now?: () => number;
 }
 /** One cached credit lookup. */
 interface CreditEntry {
+  /** What is left, summed over the packages that answered. */
   total?: number;
+  /** What the cycle has consumed, when the upstream stated it. */
+  used?: number;
+  /**
+   * The cycle's capacity, summed the same way, when the upstream declared one.
+   *
+   * Absent for an uncapped account and for one whose answer carried no capacity:
+   * both mean "there is no total to state", which is a different fact from a
+   * total of zero, so a renderer shows the remaining figure alone rather than a
+   * "used / total" pair built from a zero.
+   */
+  size?: number;
   error?: string;
   atMs: number;
 }
@@ -1788,7 +2026,7 @@ interface CreditEntry {
  * Owns the pool's network-facing behaviour for one variant.
  *
  * Credit figures are cached per account for a minute. That matters because the
- * floating window polls while a conversation is open, and an uncached lookup
+ * composer badge polls while a conversation is open, and an uncached lookup
  * would mean one billing request per account per poll — real traffic against
  * the user's own quota, for a number that changes slowly.
  */
@@ -1799,6 +2037,8 @@ declare class WorkBuddyAccountService {
   private readonly client;
   private readonly qr;
   private readonly logger;
+  private readonly usageFor;
+  private readonly onDesktopReadError;
   private readonly now;
   private readonly credits;
   private readonly inflight;
@@ -1812,6 +2052,12 @@ declare class WorkBuddyAccountService {
    * the app leaves the captured account in place, which is the behaviour the
    * whole feature depends on.
    *
+   * The write is marked as a *sync*, so re-reading a file that has not moved on
+   * cannot resurrect an account the user disabled, clear a benching, revive a
+   * dead session, or put the file's stale token back over one the plugin
+   * refreshed itself. The file is polled every thirty seconds; a poll is not a
+   * sign-in.
+   *
    * @returns the captured account, or undefined when the app is not signed in.
    */
   captureDesktop(): Promise<WorkBuddyAccount | undefined>;
@@ -1822,8 +2068,17 @@ declare class WorkBuddyAccountService {
    * refuses a credential belonging to the other product, and the QR flow checks
    * its own answer before it gets this far.
    */
-  capture(credential: WorkBuddyCredential): WorkBuddyAccount;
-  /** The desktop app's account identity, when the app is signed in. */
+  capture(credential: WorkBuddyCredential, syncDesktop?: boolean): WorkBuddyAccount;
+  /**
+   * The desktop app's account identity, when the app is signed in.
+   *
+   * Never throws. A desktop read that fails (no decryption binary on this
+   * platform, a credential for the other region, an unreadable file) is a
+   * diagnosis about the app, not a reason the pool cannot be described: the
+   * pool's own members still answer, and on the international variant the
+   * account has to be ADDED through this page in the first place. The failure is
+   * reported through {@link WorkBuddyAccountServiceOptions.onDesktopReadError}.
+   */
   desktopIdentity(): Promise<string | undefined>;
   /**
    * The credential the catalog, credits, and probes run as.
@@ -1859,9 +2114,9 @@ declare class WorkBuddyAccountService {
   /** Forget a cached credit figure, e.g. after a request spent some. */
   invalidateCredits(id?: string): void;
   /**
-   * The snapshot the card's account tab and the floating window render.
+   * The snapshot the card's account tab renders.
    *
-   * @param withCredits - whether to include per-account balances. The floating
+   * @param withCredits - whether to include per-account balances. The card
    *   window asks for them; a write confirmation does not need them and should
    *   not pay for N billing requests.
    * @param forceCredits - bypass the credit cache.
@@ -1966,6 +2221,22 @@ interface WorkBuddyRotationOptions {
    * every later request would pay for another refresh.
    */
   onRefreshed?: (account: WorkBuddyAccount, credential: WorkBuddyCredential) => void;
+  /**
+   * Called with the usage one ANSWER reported, attributed to the pool member
+   * that produced it.
+   *
+   * This is the only place those two facts meet: the rotation knows which account
+   * served the request, and the answer's stream is where the upstream states what
+   * it cost. The stream is teed — the caller's copy is not delayed by this
+   * reader, and the accounting can never stall the user's reply.
+   */
+  onUsage?: (accountId: string, usage: WorkBuddyRequestUsage) => void;
+  /**
+   * Called once per process with the numeric field names the upstream's usage
+   * block actually carried, so an unfamiliar shape is discovered from a log line
+   * rather than guessed at in the parser.
+   */
+  onUsageShape?: (fields: readonly string[]) => void;
   logger?: {
     warn(...args: unknown[]): void;
   };
@@ -1990,8 +2261,20 @@ declare class WorkBuddyRotation {
   private readonly pool;
   private readonly client;
   private readonly onRefreshed;
+  private readonly onUsage;
+  private readonly onUsageShape;
   private readonly logger;
   constructor(options: WorkBuddyRotationOptions);
+  /**
+   * Hand back an answer whose usage is being counted, without altering it.
+   *
+   * The body is teed: one branch reaches the caller exactly as it arrived, the
+   * other is drained by {@link consumeStreamUsage}. A body that cannot be teed
+   * (no stream at all — a shape this upstream does not produce for chat, but the
+   * type permits) is returned untouched, because accounting is never worth
+   * breaking a reply for.
+   */
+  private tapUsage;
   /**
    * Attempt the request until an account answers, or the pool runs out.
    *
@@ -2016,8 +2299,11 @@ declare class WorkBuddyRotation {
   /**
    * Refresh one account's access token, persisting the result.
    *
-   * A refresh with no stored refresh token cannot succeed and is reported as
-   * such rather than attempted.
+   * The three outcomes are kept apart on purpose, because two of them look
+   * identical from the outside and mean opposite things: a refusal says the
+   * credential is finished, while an unreachable endpoint says nothing at all.
+   * Collapsing them into a single `undefined` is what used to sign an account
+   * out over a timeout.
    */
   private tryRefresh;
 }
@@ -2126,6 +2412,44 @@ declare class WorkBuddyVisibilityStore {
   private load;
   /** The model ids one account has hidden; empty when it never hid any. */
   disabled(account: string): readonly string[];
+  /**
+   * The ids one account allows, when it narrowed the list; undefined = no
+   * allowlist, i.e. show everything {@link disabled} does not hide.
+   *
+   * undefined and `[]` are deliberately NOT the same value here even though
+   * both are stored as an absent list: a caller asking "did the user narrow
+   * this?" needs to know, and only the caller can decide whether an empty
+   * allowlist means "nothing allowed" or "no filter". Storage keeps no such
+   * distinction (see {@link SavedVisibility.allowlist}), so this returns
+   * undefined for both and the caller's own empty-string check is what tells
+   * the cases apart.
+   */
+  allowlist(account: string): readonly string[] | undefined;
+  /**
+   * Replace one account's allowlist.
+   *
+   * Passing undefined (or an empty list) clears it, which restores the state
+   * where the account shows everything `disabled` does not hide — that is what
+   * the card's "show all" action does, and it is deliberately the same call as
+   * "narrow to these": one method, one meaning per argument.
+   *
+   * The hidden list is untouched by an allowlist write. A model in `disabled`
+   * stays hidden if it is later added to the allowlist only through the
+   * subtraction below — see {@link effectiveHidden}, which is what every reader
+   * must go through.
+   */
+  setAllowlist(account: string, ids: readonly string[] | undefined): void;
+  /**
+   * The ids the picker must actually hide for one account: the union of the
+   * allowed-list's complement and the explicit hide-list.
+   *
+   * The ONE reader every caller uses. With an allowlist set, everything outside
+   * it is hidden, and an id in `disabled` stays hidden even if it was also
+   * allowed — the two lists can disagree (a stale allowlist entry beside an
+   * explicit hide), and "hidden" winning is the only resolution that does not
+   * resurrect a model the user turned off.
+   */
+  effectiveHidden(account: string, catalogIds: readonly string[]): readonly string[];
   /**
    * Show or hide one model for one account, persisting before committing.
    *
@@ -2322,14 +2646,18 @@ interface Config {
    * until the user explicitly agrees.
    */
   probeConsent?: boolean;
-  /**
-   * Whether the floating account window is drawn in the conversation. On by
-   * default: it is the only place the pool's state is visible while chatting,
-   * which is exactly when a rotation matters.
-   */
-  floatingAccounts?: boolean;
   /** Use the largest context window the international catalog explicitly offers. */
   useMaximumContextWindow?: boolean;
+  /**
+   * How the sidebar card states each product's credit.
+   *
+   * `'remaining'` (default) is one line per product — "WorkBuddy 剩余额度 5,266";
+   * `'usage'` is the reference card's shape — a "used / total" pair over a bar of
+   * that ratio. Both describe the same pool; they differ in which figure leads,
+   * and that is a matter of taste rather than of correctness, which is why it is
+   * a setting instead of a decision this plugin makes for the user.
+   */
+  sidebarCreditStyle?: WorkBuddySidebarCreditStyle;
 }
 /**
  * The composition schema: what the loader reads and what 0.1.7's settings forms

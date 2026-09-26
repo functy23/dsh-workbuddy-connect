@@ -3,7 +3,7 @@
  * copy keys that name it.
  *
  * This lives apart from any component because several of them need it and none
- * of them owns it — the settings page renders both products, the floating
+ * of them owns it — the settings page renders both products, the sidebar
  * window labels both, the sidebar footer summarises both, and the composer
  * control resolves a provider id back to the card that serves it. It is also
  * the one place the two products' route constants are paired, so a variant can

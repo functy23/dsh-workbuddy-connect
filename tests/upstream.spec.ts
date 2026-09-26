@@ -195,8 +195,10 @@ describe('WorkBuddyUpstreamClient.fetchCredits', () => {
     ]))))
 
     const credits = await new WorkBuddyUpstreamClient().fetchCredits(CREDENTIAL)
-    // Second branch: size<=0 but cycleUsed>0 → cycleRemain.
-    expect(credits.accounts[0]).toEqual({ packageName: 'pkg', remain: 20, size: 0 })
+    // Second branch: size<=0 but cycleUsed>0 → cycleRemain, and the cycle's own
+    // consumption rides along because the upstream stated it.
+    expect(credits.accounts[0]).toEqual({ packageName: 'pkg', remain: 20, size: 0, used: 5 })
+    expect(credits.used).toBe(5)
   })
 
   it('falls back to capacity remain when no cycle fields (third branch)', async () => {
@@ -320,7 +322,8 @@ describe('WorkBuddyUpstreamClient.fetchCredits (CN enterprise)', () => {
     const credits = await new WorkBuddyUpstreamClient().fetchCredits(ENTERPRISE)
 
     expect(credits.total).toBe(380)
-    expect(credits.accounts).toEqual([{ packageName: 'enterprise', remain: 380, size: 500 }])
+    expect(credits.used).toBe(120)
+    expect(credits.accounts).toEqual([{ packageName: 'enterprise', remain: 380, size: 500, used: 120 }])
     expect(credits.unlimited).toBeUndefined()
   })
 
@@ -330,7 +333,8 @@ describe('WorkBuddyUpstreamClient.fetchCredits (CN enterprise)', () => {
     const credits = await new WorkBuddyUpstreamClient().fetchCredits(ENTERPRISE)
 
     expect(credits.total).toBe(380)
-    expect(credits.accounts).toEqual([{ packageName: 'enterprise', remain: 380, size: 500 }])
+    expect(credits.used).toBe(120)
+    expect(credits.accounts).toEqual([{ packageName: 'enterprise', remain: 380, size: 500, used: 120 }])
   })
 
   it('marks limitNum -1 as unlimited rather than a negative balance', async () => {
@@ -350,7 +354,10 @@ describe('WorkBuddyUpstreamClient.fetchCredits (CN enterprise)', () => {
     const credits = await new WorkBuddyUpstreamClient().fetchCredits(ENTERPRISE)
 
     expect(credits.total).toBe(0)
-    expect(credits.accounts).toEqual([{ packageName: 'enterprise', remain: 0, size: 500 }])
+    // The over-limit usage is reported as stated (600) rather than clamped to
+    // the limit: the clamp belongs to the REMAINING figure, and rewriting the
+    // used figure would hide that the account went past its quota.
+    expect(credits.accounts).toEqual([{ packageName: 'enterprise', remain: 0, size: 500, used: 600 }])
   })
 
   it('parses cycleResetTime when present in the response', async () => {

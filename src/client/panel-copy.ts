@@ -56,6 +56,21 @@ export const PANEL_COPY_EN = {
   failure: 'Read failed',
   /** A limit leaves N accounts benched until their stated reset. */
   benched: '{count} set aside',
+  /** The card's spend line, laid out as "used / total" like the reference card. */
+  creditUsed: '{used} / {total}',
+  /** Shown instead when the pool's capacity cannot be stated: the balance alone. */
+  creditRemaining: '{remaining} left',
+  /**
+   * The sidebar card's one line per product: the label names the figure, so the
+   * number needs no column header beside it.
+   */
+  creditRemainingLabel: '{product} remaining',
+  /**
+   * The composer badge's text and accessible name: the product, then the balance
+   * — "WorkBuddy: 5,266". The colon is the whole label, so the figure never
+   * needs a heading above it.
+   */
+  creditBadgeLabel: '{product}: {remaining}',
   /** The footer card's accessible name and tooltip. */
   footerLabel: 'WorkBuddy — open the dashboard',
   /** The rail icon's accessible name. */
@@ -87,6 +102,12 @@ export const PANEL_COPY_ZH: Record<PanelKey, string> = {
   allUnavailable: '全部账号被搁置',
   failure: '读取失败',
   benched: '{count} 个搁置中',
+  creditUsed: '{used} / {total}',
+  creditRemaining: '剩余 {remaining}',
+  /** 侧边栏每行一条：标签自己说明这个数字是什么。 */
+  creditRemainingLabel: '{product} 剩余额度',
+  /** 聊天框那枚徽标的文字与无障碍名：产品名 + 余额。 */
+  creditBadgeLabel: '{product}: {remaining}',
   footerLabel: 'WorkBuddy —— 打开仪表盘',
   railLabel: 'WorkBuddy 仪表盘',
 }

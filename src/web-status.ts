@@ -1,6 +1,6 @@
 /**
  * Same-origin status route for the WorkBuddy plugin card: sign-in state,
- * token expiry, remaining credit, the account pool, and the floating window's
+ * token expiry, remaining credit, and the account pool.
  * data. The route answers loopback browser requests only and never carries
  * token material.
  *
@@ -21,7 +21,7 @@ import { normalizeCredits } from './upstream.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
-import type { WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from './status-paths.ts'
+import type { WorkBuddySidebarCreditStyle, WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from './status-paths.ts'
 
 export { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
 export type { WorkBuddyWebStatus } from './status-paths.ts'
@@ -53,10 +53,14 @@ export interface WorkBuddyStatusRouteOptions {
   /** In-process key authorizing probe control writes. */
   probeKey?: string
   /**
-   * Whether this variant's accounts belong in the floating window. Read live,
-   * so toggling the setting takes effect on the next poll without a reload.
+   * How the sidebar card states each product's credit.
+   *
+   * Read per document rather than captured: the setting is written through the
+   * host's settings service, and the very next read must reflect it without a
+   * restart. Absent when the host cannot persist the preference, which is the
+   * card's signal to keep its default shape.
    */
-  floatingWindow?: () => boolean
+  sidebarCreditStyle?: () => WorkBuddySidebarCreditStyle | undefined
   /**
    * Why the pool is empty, when the reason is diagnosable.
    *
@@ -150,14 +154,22 @@ export async function workBuddyWebStatus(
         ?? 'no account yet: sign in to the desktop app, or add one by QR from this card',
       ...authStatus?.reasonCode === undefined ? {} : { reasonCode: authStatus.reasonCode },
       // The account section and the control key travel even with an empty pool.
-      // They are how the pool stops being empty: the card's "add by QR" action
-      // is a write, so withholding the key until an account existed would make
-      // scanning the first account impossible — the one case where the user has
+      // They are how the pool stops being empty: the card's add-account action is
+      // a write, so withholding the key until an account existed would make
+      // signing in the first account impossible — the one case where the user has
       // no other way in.
-      ...accountSections(deps, await deps.accounts.snapshot({ withCredits: false })),
+      //
+      // A snapshot that fails must not take that key with it. The pool is empty
+      // here, so the account LIST is worth nothing, while the key is worth
+      // everything: without it the card's every action answers "request failed"
+      // for a problem the user cannot even see. The reason line still carries the
+      // diagnosis (the caller records desktop-read failures for exactly this).
+      ...await accountSections(deps, await deps.accounts.snapshot({ withCredits: false }).catch(() => ({
+        accounts: [] as const,
+      }))),
     }
   }
-  // One snapshot serves both the card's account tab and the floating window.
+  // One snapshot serves every surface that reads this document.
   // Credits are included because the window shows a balance per account; the
   // service caches each figure for a minute so a poll is not a burst of
   // billing requests.
@@ -166,6 +178,8 @@ export async function workBuddyWebStatus(
   const snapshot = await deps.accounts.snapshot({ withCredits: true })
   const primary = snapshot.accounts.find(account => account.id === snapshot.primary)
   const sections = accountSections(deps, snapshot)
+  /** The last diagnosable desktop-read failure, read once for this document. */
+  const desktopError = deps.emptyReason?.()
   const status: Extract<WorkBuddyWebStatus, { status: 'signed-in' }> = {
     status: 'signed-in',
     ...primary?.nickname === undefined ? {} : { nickname: primary.nickname },
@@ -175,6 +189,10 @@ export async function workBuddyWebStatus(
     // does not actually speak to.
     ...primary === undefined ? {} : { domain: primary.domain },
     ...primary === undefined ? {} : { source: primary.origin },
+    // A desktop read that failed is reported even now: the pool keeps serving,
+    // so without this the user would see a healthy group and never learn that
+    // the file they just configured is being refused.
+    ...desktopError === undefined ? {} : { desktopError },
     ...sections,
   }
   // Model facts ride the signed-in document so the card can show rates,
@@ -296,15 +314,20 @@ function accountSections(
 ): {
   accounts: NonNullable<Extract<WorkBuddyWebStatus, { status: 'signed-in' }>['accounts']>
   probeKey?: string
+  sidebarCreditStyle?: 'remaining' | 'usage'
 } {
+  // The display preference rides this helper because it is shared by both sign-in
+  // states for the same reason the control key is: the sidebar draws its credit
+  // line the same way whether the pool is empty or not.
+  const creditStyle = deps.sidebarCreditStyle?.()
   return {
     accounts: {
       accounts: snapshot.accounts,
       ...snapshot.primary === undefined ? {} : { primary: snapshot.primary },
       ...snapshot.desktop === undefined ? {} : { desktop: snapshot.desktop },
-      floatingWindow: deps.floatingWindow?.() === true,
     },
     ...deps.probeKey === undefined ? {} : { probeKey: deps.probeKey },
+    ...creditStyle === undefined ? {} : { sidebarCreditStyle: creditStyle },
   }
 }
 

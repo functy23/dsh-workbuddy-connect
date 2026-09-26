@@ -8,7 +8,11 @@
     "module": "esnext",
     "moduleResolution": "bundler",
     "target": "es2024",
-    "lib": ["es2024"],
+    // `dom` is here because the host project still typechecks the modules the
+    // browser half imports from it (the tsconfig `exclude` list hides
+    // `src/client`, but not a file that reaches into it). The host code itself
+    // touches no DOM API.
+    "lib": ["es2024", "dom", "dom.iterable"],
     "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "noEmit": true,
@@ -17,6 +21,7 @@
   "include": ["src", "tests"],
   "exclude": [
     "src/client",
+    "tests/primitives-stub.tsx",
     "tests/probe-composer.spec.ts",
     "tests/plugin-card.spec.ts",
     "tests/client-variants.spec.ts",
@@ -26,7 +31,7 @@
     "tests/model-visibility-card.spec.ts",
     "tests/electron-assist.spec.ts",
     "tests/qr-code.spec.ts",
-    "tests/floating-accounts.spec.ts",
+    "tests/credit-badge.spec.ts",
     "tests/settings-page.spec.ts",
     "tests/segmented.spec.ts",
     "tests/panel-view.spec.ts"

@@ -75,9 +75,13 @@ check('every field is marked volatile',
 // objects and throw `expected string but got [object Object]`.
 const fiber = ctx.plugin(WorkBuddy, {})
 await fiber
+// One field stands in for all of them: the point is that the loader's parse
+// produced live references rather than frozen values, which is what makes a
+// settings write commit in place. (This used to read `floatingAccounts`, a
+// setting the plugin no longer has.)
 check('the parsed config holds volatile references',
-  typeof fiber.config?.floatingAccounts?.get === 'function'
-  && fiber.config.floatingAccounts.get() === true)
+  typeof fiber.config?.sidebarCreditStyle?.get === 'function'
+  && fiber.config.sidebarCreditStyle.get() === 'remaining')
 
 await new Promise(resolve => setTimeout(resolve, 250))
 const providers = ctx.llm.listProviders().map(provider => provider.id)

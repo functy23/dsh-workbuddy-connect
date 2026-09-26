@@ -57,6 +57,25 @@ export const WORKBUDDY_AI_PROBE_PATH = '/plugins/dsh-workbuddy-connect/ai/probe'
 export const WORKBUDDY_ACCOUNT_PATH = '/plugins/dsh-workbuddy-connect/accounts'
 export const WORKBUDDY_AI_ACCOUNT_PATH = '/plugins/dsh-workbuddy-connect/ai/accounts'
 
+/**
+ * The settings namespace this plugin's profile entry is served under.
+ *
+ * Shared because BOTH halves need the same string for different reasons, and a
+ * disagreement between them fails silently. The Host uses it as the
+ * `settingsNs` of each variant's configurable-provider directory entry; the
+ * browser half uses it as the `key` its Models-page provider card registers
+ * under, and the Models page dispatches that keyed slot with `entryKey =
+ * settingsNs`. Two different strings would mean a card that registers, renders
+ * nowhere, and reports no error.
+ *
+ * On DSH 0.1.7 a plugin's composition entry IS its settings namespace, so this
+ * is the profile row id declared in `cordis.patch.yml` — not one of the
+ * per-variant names the 0.1.2-era sections used. The Host asserts the two agree
+ * at startup (see {@link module:dsh-workbuddy-connect}); this constant is the
+ * one place the value is written down.
+ */
+export const WORKBUDDY_PROFILE_ENTRY_ID = 'llm-workbuddy'
+
 /** One model's recorded probe observation, as the card displays it. */
 export interface WorkBuddyWebProbeModel {
   id: string
@@ -91,13 +110,41 @@ export interface WorkBuddyProbeAction {
    * All five are writes, which is why they share this route's in-process key
    * and loopback guards rather than the read-only status GET.
    */
-  action: 'probe' | 'clear' | 'refresh' | 'set-maximum-context-window' | 'set-model-visibility'
+  action: 'probe' | 'clear' | 'refresh' | 'set-maximum-context-window' | 'set-model-visibility' | 'set-model-allowlist' | 'open-link' | 'set-sidebar-credit-style'
   /** Target model id; required for `probe` and `set-model-visibility`. */
   model?: string
   /** Requested value for `set-maximum-context-window` and `set-model-visibility`. */
   enabled?: boolean
   /** Requested picker visibility for `set-model-visibility`. */
   visible?: boolean
+  /**
+   * Replacement allowlist for `set-model-allowlist`.
+   *
+   * An empty array clears the filter (show everything the hide-list permits) —
+   * the same meaning as the field being absent on read. The whole list is sent
+   * rather than a delta so the write is idempotent: a retried request cannot
+   * leave a half-applied filter.
+   */
+  allowlist?: readonly string[]
+  /**
+   * How the sidebar should state each product's credit, for
+   * `set-sidebar-credit-style`.
+   *
+   * One plugin-wide preference (the sidebar shows both products at once), which
+   * is why it is written through this route rather than per product: either
+   * variant's card can set it, and the next read of either document carries it.
+   */
+  creditStyle?: WorkBuddySidebarCreditStyle
+  /**
+   * Absolute http(s) link for `open-link`.
+   *
+   * Travelling over this route rather than being opened by the page is the
+   * point: a desktop WebView cannot hand a URL to the user's own browser, and
+   * the sign-in page has to be visited where their session already is. The host
+   * validates the scheme again immediately before launching, so a crafted
+   * request cannot turn this into a launcher for arbitrary schemes.
+   */
+  url?: string
   /**
    * Expected account key for `set-model-visibility`: the `visibility.account`
    * the card rendered its checkboxes from. The host refuses the write when the
@@ -122,6 +169,15 @@ export interface WorkBuddyWebVisibilitySection {
   account: string
   /** Model ids this account has hidden from the picker (the full list, including ids not in the current catalog). */
   disabled: readonly string[]
+  /**
+   * The ids this account allows, when it narrowed the picker; omitted otherwise.
+   *
+   * Omitted — rather than an empty array — is the "no filter" state, which is
+   * what the page renders the checkbox for. An allowlist write is a SEPARATE
+   * action from a per-model visibility write because they are separate lists on
+   * disk: see {@link WorkBuddyProbeAction}.
+   */
+  allowlist?: readonly string[]
 }
 
 /**
@@ -257,18 +313,69 @@ export interface WorkBuddyWebAccount {
   available: boolean
   /** Remaining credit, when the last lookup succeeded. */
   credits?: number
+  /**
+   * The cycle's capacity, when the upstream declared one.
+   *
+   * Optional because "no cap" and "the answer carried none" are both real: the
+   * card states a used/total pair only when this is present, and the remaining
+   * figure alone otherwise. Deriving a total from `credits` is impossible — a
+   * balance does not imply a cap.
+   */
+  creditsTotal?: number
   creditsError?: string
   creditsAtMs?: number
+  /**
+   * Credits consumed this cycle, when the upstream stated a figure.
+   *
+   * Never derived from `creditsTotal - credits`: the two endpoints report usage
+   * independently and either may omit it, so a subtraction would be the
+   * plugin's arithmetic dressed up as the upstream's number.
+   */
+  creditsUsed?: number
+  /**
+   * What this plugin has sent through the account, counted from the answers it
+   * relayed (see the usage store). Absent until at least one request landed.
+   */
+  usage?: {
+    requests: number
+    /** How many of those answers carried a usage block at all. */
+    reported: number
+    promptTokens: number
+    completionTokens: number
+    cacheReadTokens: number
+    cacheWriteTokens: number
+    /**
+     * Cache-read share of the prompt, when an answer reported both numbers.
+     * Absent — never zero — while nothing has reported a cache figure.
+     */
+    cacheHitRate?: number
+    /** First counted request in this tally, epoch ms. */
+    sinceMs: number
+    /** Most recent counted request, epoch ms. */
+    lastAtMs: number
+  }
   /** Access-token expiry, epoch ms; 0 means the source did not say. */
   expiresAtMs: number
-  /** The upstream refused the session and a token refresh could not fix it. */
+  /**
+   * The upstream refused the session and a *definitive* refresh refusal
+   * confirmed it.
+   *
+   * Never set by a refresh that merely failed to complete: an unreachable
+   * endpoint says nothing about the sign-in. Turning the account back on clears
+   * this, which is the user's override.
+   */
   sessionDead?: boolean
   /** Present while the account is benched after a limit. */
   cooldown?: {
     /** Epoch ms after which it will be tried again. */
     untilMs: number
     reason: 'rate' | 'credit' | 'session'
-    /** Consecutive failures that produced this benching. */
+    /**
+     * Consecutive failures earned by this account, not by this benching.
+     *
+     * The count survives the benching expiring, which is what makes the backoff
+     * grow for an account that keeps failing. It resets on the first success.
+     */
     strikes: number
   }
   lastUsedAtMs: number
@@ -282,13 +389,6 @@ export interface WorkBuddyWebAccounts {
   primary?: string
   /** The desktop app's current account, when it is a pool member. */
   desktop?: string
-  /**
-   * Whether the floating account window is shown.
-   *
-   * It rides the status document because the window has to render *before*
-   * anything else on the page can tell it what the setting says.
-   */
-  floatingWindow: boolean
 }
 
 /** One QR sign-in challenge, as the browser renders it. */
@@ -398,6 +498,26 @@ export function isWorkBuddySignedOutReasonCode(value: unknown): value is WorkBud
   return typeof value === 'string' && (SIGNED_OUT_REASON_CODES as readonly string[]).includes(value)
 }
 
+/**
+ * The two ways the sidebar card may state a product's credit.
+ *
+ * Declared here rather than with the host's config schema because BOTH halves
+ * need the closed set: the host validates what it writes, and the browser picks
+ * a rendering from what it reads — with one shared definition, a third style
+ * could not be added on one side alone.
+ *
+ * - `'remaining'`: one line per product, "WorkBuddy 剩余额度 5,266" — the figure
+ *   most readers open the sidebar for, with no bar;
+ * - `'usage'`: the reference provider card's shape, a "used / total" pair over a
+ *   bar of that ratio, which states the cycle's capacity as well as the balance.
+ */
+export type WorkBuddySidebarCreditStyle = 'remaining' | 'usage'
+
+/** Whether a value is one of the closed set of sidebar credit styles. */
+export function isWorkBuddySidebarCreditStyle(value: unknown): value is WorkBuddySidebarCreditStyle {
+  return value === 'remaining' || value === 'usage'
+}
+
 /** The JSON document the plugin card renders. */
 export type WorkBuddyWebStatus =
   | {
@@ -410,6 +530,14 @@ export type WorkBuddyWebStatus =
     reason?: string
     /** Machine-readable companion to `reason`; see {@link WorkBuddySignedOutReasonCode}. */
     reasonCode?: WorkBuddySignedOutReasonCode
+    /**
+     * How the sidebar should state each product's credit.
+     *
+     * Carried in BOTH sign-in states: the card draws its credit lines the same
+     * way whether the pool is empty or not, so a setting that only arrived once
+     * an account existed would re-shape the card on the user's first sign-in.
+     */
+    sidebarCreditStyle?: WorkBuddySidebarCreditStyle
     /**
      * The account pool, which may be empty.
      *
@@ -436,12 +564,32 @@ export type WorkBuddyWebStatus =
     catalog?: WorkBuddyWebCatalog
     /** Reasoning-effort probe state, consent, and recorded observations. */
     probe?: WorkBuddyWebProbeSection
-    /** The account pool, for the card's account tab and the floating window. */
+    /** The account pool, for the card's account tab. */
     accounts?: WorkBuddyWebAccounts
     /** International-card preference selecting larger declared context windows. */
     useMaximumContextWindow?: boolean
     /** Per-account hidden-model state for the card's visibility controls. */
     visibility?: WorkBuddyWebVisibilitySection
+    /**
+     * How the sidebar should state each product's credit.
+     *
+     * Carried on the document because the sidebar draws itself from the same read
+     * the dashboard does, and it must state the credit the way the user chose
+     * before any other surface has had a chance to run. Absent when the host
+     * cannot persist the preference: the card then keeps its default shape.
+     */
+    sidebarCreditStyle?: WorkBuddySidebarCreditStyle
+    /**
+     * A diagnosable problem reading the desktop app's own credential, while the
+     * pool still serves from its other members.
+     *
+     * Reported in the signed-in state because that is when it is easiest to
+     * miss: the group looks healthy (the pool has accounts), the desktop file the
+     * user just pointed somewhere is being refused, and nothing else would say
+     * so. The reason the group itself is not emptied is the pool's whole point —
+     * one bad file must not take away accounts the user added by hand.
+     */
+    desktopError?: string
     /**
      * In-process key authorizing probe control writes. Handed to the card with
      * the status document (the card is same-origin and already had to pass the

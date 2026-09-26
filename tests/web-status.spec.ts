@@ -26,6 +26,48 @@ function nestedDoc(expiresAt: number): string {
   })
 }
 
+/**
+ * A status server whose desktop credential cannot be read at all, over an empty
+ * pool — the international variant's shape on a machine with no usable
+ * decryption binary.
+ *
+ * The promise under test: this is a SIGNED-OUT document WITH A KEY, not a 500.
+ * The key is how the card adds an account by pasting a token, which on that
+ * variant is the only way in. The whole route used to fail here, so every action
+ * answered "request failed" and the user was never told why.
+ */
+async function startUnreadableDesktopServer(): Promise<{ port: number, body: Record<string, unknown> }> {
+  const dir = await mkdtemp(join(tmpdir(), 'wb-status-nodecrypt-'))
+  CLEANUP.push(() => rm(dir, { recursive: true, force: true }))
+  const thrown = 'no WorkBuddy Electron binary is configured for this platform; set WORKBUDDY_ELECTRON_BIN to the app\'s Electron binary'
+  const accounts = new WorkBuddyAccountService({
+    variant: CN_VARIANT,
+    pool: new WorkBuddyAccountPool({ variant: CN_VARIANT, path: join(dir, 'accounts.json') }),
+    // Every desktop read fails the way the at-rest key provider fails when it
+    // has no binary to run.
+    store: {
+      desktopCredential: async () => { throw new Error(thrown) },
+      current: async () => { throw new Error(thrown) },
+    },
+    client: { fetchCredits: async () => ({ total: 0, accounts: [] }), refreshToken: async () => ({ accessToken: 'at' }) },
+    qr: new WorkBuddyQrLogin({ variant: CN_VARIANT }),
+  })
+  const deps = {
+    accounts,
+    client: { fetchCredits: async () => ({ total: 0, accounts: [] }) },
+    models: () => [],
+    emptyReason: () => thrown,
+    probeKey: 'key-under-test',
+    store: { status: async () => ({ state: 'signed-out', reason: thrown, reasonCode: 'electron-binary-unavailable' }) },
+  } as unknown as WorkBuddyStatusRouteOptions
+  const server = createServer(workBuddyStatusHandler(deps))
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => { resolve() }))
+  const { port } = server.address() as { port: number }
+  CLEANUP.push(() => new Promise<void>(resolve => server.close(() => resolve())))
+  const answer = await requestOnce({ port, method: 'GET', headers: { host: `127.0.0.1:${String(port)}` } })
+  return { port, body: JSON.parse(answer.body) as Record<string, unknown> }
+}
+
 /** Raw HTTP request with full header control (fetch forbids overriding Host). */
 function requestOnce(options: {
   port: number
@@ -89,6 +131,20 @@ async function startStatusServer(overrides: Partial<WorkBuddyStatusRouteOptions>
   CLEANUP.push(() => new Promise<void>(resolve => server.close(() => resolve())))
   return port
 }
+
+describe('an unreadable desktop credential', () => {
+  it('answers a signed-out document carrying the key, not a 500', async () => {
+    const { body } = await startUnreadableDesktopServer()
+    // The document, not an error payload: the card needs the key to add an
+    // account at all.
+    expect(body['status']).toBe('signed-out')
+    expect(body['probeKey']).toBe('key-under-test')
+    // And it says what is wrong, in the host's own words.
+    expect(String(body['reason'])).toContain('no WorkBuddy Electron binary is configured')
+    // The empty pool rides along, because this is the state accounts are ADDED from.
+    expect(body['accounts']).toEqual({ accounts: [] })
+  })
+})
 
 describe('context capacity reporting', () => {
   /**

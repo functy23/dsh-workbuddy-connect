@@ -97,11 +97,27 @@ export interface WorkBuddyAccount {
   cooldown?: WorkBuddyCooldown
   /**
    * Set when the upstream refused the session outright and the refresh token
-   * could not revive it. Kept as a flag rather than a deletion: the account
-   * still shows in the list (so the user can see what happened and delete it),
-   * and it never participates in rotation again.
+   * could not revive it *definitively*. Kept as a flag rather than a deletion:
+   * the account still shows in the list (so the user can see what happened and
+   * delete it), and it never participates in rotation again.
+   *
+   * A transient failure while refreshing (a timeout, a 5xx, a dropped
+   * connection) never sets this: it is not evidence that the sign-in is gone,
+   * and burning the account for it left the user with no way back. Turning the
+   * account back on — {@link WorkBuddyAccountPool.setEnabled} with `true` — is
+   * the manual override, for the case where the session really is gone but the
+   * upstream has since accepted it again.
    */
   sessionDead?: boolean
+  /**
+   * Consecutive cooldown-causing failures, cleared by the first success.
+   *
+   * Kept apart from {@link WorkBuddyCooldown.strikes} on purpose: the cooldown
+   * is gone by the time the account is eligible again, so a streak stored only
+   * inside it restarted at 1 on every later failure and the backoff schedule
+   * never grew past its base. This is the counter the schedule actually needs.
+   */
+  failureStreak?: number
   addedAtMs: number
   updatedAtMs: number
 }
@@ -117,6 +133,22 @@ export interface WorkBuddyAccountInput {
   expiresAtMs: number
   refreshExpiresAtMs?: number
   origin: WorkBuddyAccountOrigin
+  /**
+   * This write is a background re-read of a sign-in source, not a user action.
+   *
+   * A sweep re-reads the desktop app's file every thirty seconds and upserts
+   * what it finds. That is a *duplicate* of a credential the pool already
+   * holds, and treating it like a fresh sign-in undid everything the pool had
+   * learned in the meantime: a disabled account came back on, a benching was
+   * dropped, a dead session was resurrected, and — worst — the tokens were
+   * overwritten with the file's older copy, discarding a refresh the plugin had
+   * performed itself.
+   *
+   * A sync therefore only refreshes what a re-read can legitimately tell us
+   * (the nickname), keeps the user's enabled flag and every health field, and
+   * adopts the tokens only when the source's copy is demonstrably *newer*.
+   */
+  sync?: boolean
 }
 
 /** Outcome of an upsert, for the "this account is already in the pool" notice. */
@@ -139,6 +171,14 @@ const COOLDOWN_BASE_MS: Readonly<Record<WorkBuddyCooldownReason, number>> = {
   // waiting fixes it.
   session: 6 * 60 * 60_000,
 }
+
+/**
+ * Longest failure streak the backoff schedule is computed from.
+ *
+ * The schedule is capped anyway, so this only bounds the counter itself; it
+ * keeps a long outage from growing an unbounded integer in the pool file.
+ */
+const STRIKE_CEILING = 16
 
 /** Ceiling for each reason's exponential backoff. */
 const COOLDOWN_CAP_MS: Readonly<Record<WorkBuddyCooldownReason, number>> = {
@@ -164,6 +204,19 @@ export function cooldownDurationMs(reason: WorkBuddyCooldownReason, strikes: num
   const exponent = Math.max(0, Math.min(strikes - 1, 16))
   const base = COOLDOWN_BASE_MS[reason]
   return Math.min(base * 2 ** exponent, COOLDOWN_CAP_MS[reason])
+}
+
+/**
+ * Whether a source file's credential demonstrably post-dates the pool's copy.
+ *
+ * Only a strictly later access-token expiry proves that, and only that is
+ * evidence a sign-in happened: the pool refreshes inside the five-minute margin
+ * before expiry, so every token *it* mints expires later than the copy in the
+ * source file. A file that expires later than the pool's copy is therefore a
+ * credential the pool has never seen.
+ */
+function sourceIsNewer(previous: WorkBuddyAccount, input: WorkBuddyAccountInput): boolean {
+  return input.expiresAtMs > previous.expiresAtMs
 }
 
 /** Stable identity key for a credential, shared with catalogs and probes. */
@@ -253,6 +306,9 @@ function normalizeAccount(row: WorkBuddyAccount): WorkBuddyAccount {
     ...typeof row.addedAtMs === 'number' && Number.isFinite(row.addedAtMs) ? { addedAtMs: row.addedAtMs } : { addedAtMs: now },
     updatedAtMs: typeof row.updatedAtMs === 'number' && Number.isFinite(row.updatedAtMs) ? row.updatedAtMs : now,
     ...row.sessionDead === true ? { sessionDead: true } : {},
+    ...typeof row.failureStreak === 'number' && Number.isFinite(row.failureStreak) && row.failureStreak > 0
+      ? { failureStreak: Math.floor(row.failureStreak) }
+      : {},
   }
   if (cooldown !== undefined && typeof cooldown === 'object' && cooldown !== null
     && typeof cooldown.untilMs === 'number' && Number.isFinite(cooldown.untilMs)) {
@@ -283,6 +339,14 @@ export class WorkBuddyAccountPool {
   private readonly variant: WorkBuddyVariant
   private readonly path: string
   private accounts: WorkBuddyAccount[] | undefined
+  /**
+   * Highest stamp handed out by {@link next}, seeded lazily from the rows.
+   *
+   * Wall-clock based so it stays comparable with the `lastUsedAtMs` values on
+   * disk after a restart; only the *strictly increasing* part is what the
+   * single-tick case needs.
+   */
+  private claimSeq = 0
 
   constructor(options: WorkBuddyAccountPoolOptions) {
     this.variant = options.variant
@@ -351,28 +415,110 @@ export class WorkBuddyAccountPool {
       return { account, created: true, updated: false }
     }
     const previous = accounts[index] as WorkBuddyAccount
-    const updated: WorkBuddyAccount = {
-      ...previous,
-      ...input.enterpriseId === undefined || input.enterpriseId === '' ? {} : { enterpriseId: input.enterpriseId },
-      ...input.nickname === undefined || input.nickname === '' ? {} : { nickname: input.nickname },
-      domain: input.domain,
-      accessToken: input.accessToken,
-      ...input.refreshToken === '' ? {} : { refreshToken: input.refreshToken },
-      expiresAtMs: input.expiresAtMs,
-      ...input.refreshExpiresAtMs === undefined ? {} : { refreshExpiresAtMs: input.refreshExpiresAtMs },
-      updatedAtMs: now,
-      // A fresh sign-in is the cure for every benching, including a dead
-      // session: the tokens are new, so nothing about the old state applies.
-      enabled: true,
-    }
-    delete updated.cooldown
-    delete updated.sessionDead
+    const updated = input.sync === true
+      ? this.syncExisting(previous, input, now)
+      : this.reSignIn(previous, input, now)
     accounts[index] = updated
     const changed = updated.accessToken !== previous.accessToken
       || updated.refreshToken !== previous.refreshToken
       || updated.domain !== previous.domain
     this.persist()
     return { account: updated, created: false, updated: changed }
+  }
+
+  /**
+   * Adopt the tokens of a *newer* copy of a sign-in the pool already holds.
+   *
+   * The comparison is by access-token expiry, which is the only ordering a
+   * source file offers: a token minted later expires later. An equal or older
+   * stamp is a copy the pool has already surpassed — which is exactly what the
+   * desktop file is after the plugin refreshed the account itself.
+   *
+   * A copy with no expiry at all (0, "the source did not say") is treated as
+   * *newer* than one the pool also cannot date, because in that case there is
+   * nothing to order by and the file is the live sign-in.
+   */
+  private adoptTokens(
+    previous: WorkBuddyAccount,
+    input: WorkBuddyAccountInput,
+  ): Pick<WorkBuddyAccount, 'accessToken' | 'refreshToken' | 'expiresAtMs'> {
+    // No dates on either side: nothing to order by, and the file is the live
+    // sign-in, so its token is taken — but {@link sourceIsNewer} still answers
+    // false, because taking a token is not the same as claiming it is evidence.
+    const undated = input.expiresAtMs === 0 && previous.expiresAtMs === 0
+    if (!sourceIsNewer(previous, input) && !undated) return {
+      accessToken: previous.accessToken,
+      refreshToken: previous.refreshToken,
+      expiresAtMs: previous.expiresAtMs,
+    }
+    return {
+      accessToken: input.accessToken,
+      // A source that carries no refresh token must not erase the one the pool
+      // holds: the file's silence is not evidence that renewal stopped working.
+      refreshToken: input.refreshToken === '' ? previous.refreshToken : input.refreshToken,
+      expiresAtMs: input.expiresAtMs,
+    }
+  }
+
+  /**
+   * A background re-read of a sign-in source: identity and freshness, no health.
+   *
+   * Deliberately does NOT touch `enabled`, `cooldown`, `sessionDead`, or a
+   * benching's strike count. Every one of those is state the pool learned from
+   * the upstream or from the user, and a file that says "this account signed in
+   * at some point" is not evidence about any of them.
+   */
+  private syncExisting(previous: WorkBuddyAccount, input: WorkBuddyAccountInput, now: number): WorkBuddyAccount {
+    const tokens = this.adoptTokens(previous, input)
+    const updated: WorkBuddyAccount = {
+      ...previous,
+      ...input.enterpriseId === undefined || input.enterpriseId === '' ? {} : { enterpriseId: input.enterpriseId },
+      ...input.nickname === undefined || input.nickname === '' ? {} : { nickname: input.nickname },
+      ...input.domain === '' ? {} : { domain: input.domain },
+      ...tokens,
+    }
+    if (sourceIsNewer(previous, input)) {
+      // The one piece of health a poll *can* prove. A credential that post-dates
+      // everything the pool holds came from a sign-in the pool never saw, and a
+      // sign-in contradicts a dead session and makes a benching moot.
+      delete updated.cooldown
+      delete updated.sessionDead
+      delete updated.failureStreak
+    }
+    // Only a write that actually changed something earns a new timestamp: the
+    // sweep runs every thirty seconds and would otherwise rewrite the document
+    // — and every account's mtime — forever.
+    if (updated.accessToken !== previous.accessToken
+      || updated.refreshToken !== previous.refreshToken
+      || updated.expiresAtMs !== previous.expiresAtMs
+      || updated.domain !== previous.domain
+      || updated.nickname !== previous.nickname
+      || updated.enterpriseId !== previous.enterpriseId) {
+      updated.updatedAtMs = now
+    }
+    return updated
+  }
+
+  /**
+   * A sign-in the user performed (QR, pasted token, or a desktop file that has
+   * actually moved forward): the cure for every benching, including a dead
+   * session — the tokens are new, so nothing about the old state applies.
+   */
+  private reSignIn(previous: WorkBuddyAccount, input: WorkBuddyAccountInput, now: number): WorkBuddyAccount {
+    const adopted = this.adoptTokens(previous, input)
+    const updated: WorkBuddyAccount = {
+      ...previous,
+      ...input.enterpriseId === undefined || input.enterpriseId === '' ? {} : { enterpriseId: input.enterpriseId },
+      ...input.nickname === undefined || input.nickname === '' ? {} : { nickname: input.nickname },
+      ...input.domain === '' ? {} : { domain: input.domain },
+      ...adopted,
+      updatedAtMs: now,
+      enabled: true,
+    }
+    delete updated.cooldown
+    delete updated.sessionDead
+    delete updated.failureStreak
+    return updated
   }
 
   /** Merge a token refresh into a stored account. */
@@ -412,9 +558,23 @@ export class WorkBuddyAccountPool {
     return true
   }
 
-  /** Enable or disable one account. */
+  /**
+   * Enable or disable one account.
+   *
+   * Enabling is also the manual override for a session the plugin judged dead:
+   * the flag is a conclusion drawn from one upstream refusal plus one failed
+   * refresh, and the user saying "use this account" outranks it. Without that,
+   * a dead account was unreachable — rotation skipped it, only a successful
+   * refresh could clear the flag, and no request would ever try one.
+   */
   setEnabled(id: string, enabled: boolean): boolean {
-    const account = this.mutate(id, current => ({ ...current, enabled, updatedAtMs: Date.now() }))
+    const account = this.mutate(id, current => {
+      if (!enabled) return { ...current, enabled, updatedAtMs: Date.now() }
+      const next = { ...current, enabled, updatedAtMs: Date.now() }
+      delete next.sessionDead
+      delete next.failureStreak
+      return next
+    })
     return account !== undefined
   }
 
@@ -450,18 +610,12 @@ export class WorkBuddyAccountPool {
     this.persist()
   }
 
-  /** Mark an account as having just served a request. */
-  markUsed(id: string): void {
-    void this.mutate(id, current => ({ ...current, lastUsedAtMs: Date.now() }))
-  }
-
   /**
    * Bench an account.
    *
-   * `strikes` increments when the previous benching is still in force (the
-   * account failed again as soon as it was retried), and restarts at 1
-   * otherwise. That is what makes the backoff grow under sustained limiting
-   * and reset once the account has genuinely recovered.
+   * The account's own failure streak decides the wait, so a limit that keeps
+   * coming back is answered with a longer benching each time and a single
+   * success puts the schedule back to its base.
    *
    * @param retryAfterMs - upstream's own `Retry-After`, which wins over the
    *   schedule: the provider knows its window better than any backoff we pick.
@@ -470,8 +624,14 @@ export class WorkBuddyAccountPool {
     const now = Date.now()
     let result: WorkBuddyCooldown | undefined
     void this.mutate(id, current => {
-      const active = current.cooldown !== undefined && current.cooldown.untilMs > now
-      const strikes = active ? (current.cooldown as WorkBuddyCooldown).strikes + 1 : 1
+      // The streak is the account's own memory of repeated failure, not the
+      // current benching's: it survives the cooldown expiring, so a second
+      // failure an hour after the first one *does* back off for longer than the
+      // first. Reading the depth out of the cooldown object instead — which is
+      // what this did — made every round strike 1 and pinned the schedule to
+      // its base value forever (a rate-limited account was retried every
+      // fifteen minutes for as long as the limit stood).
+      const strikes = Math.min((current.failureStreak ?? 0) + 1, STRIKE_CEILING)
       // An upstream-stated wait is honoured on its own terms; the backoff
       // schedule's per-reason cap applies only to the schedule.
       const duration = hintMs !== undefined && hintMs > 0
@@ -479,22 +639,40 @@ export class WorkBuddyAccountPool {
         : cooldownDurationMs(reason, strikes)
       const cooldown: WorkBuddyCooldown = { untilMs: now + duration, reason, strikes, atMs: now }
       result = cooldown
-      return { ...current, cooldown }
+      return { ...current, cooldown, failureStreak: strikes }
     })
     return result
   }
 
-  /** Clear a benching after a success. */
+  /**
+   * Clear a benching after a success.
+   *
+   * The failure streak goes with it: a success is the evidence that whatever
+   * was failing has stopped, and the next failure deserves the base backoff
+   * rather than the tail of a schedule earned by the previous outage.
+   *
+   * The flag is the caller's to hand over, but this is a *state* cleanup rather
+   * than a cooldown one, so it also runs when there is nothing to clear.
+   */
   clearCooldown(id: string): void {
     void this.mutate(id, current => {
-      if (current.cooldown === undefined) return current
+      if (current.cooldown === undefined && current.failureStreak === undefined) return current
       const next = { ...current }
       delete next.cooldown
+      delete next.failureStreak
       return next
     })
   }
 
-  /** Mark an account's session as permanently dead. */
+  /**
+   * Mark an account's session as dead.
+   *
+   * Only for a *definitive* refusal: the account has earned this flag when the
+   * upstream rejected its credential and the refresh that followed was itself
+   * refused. A refresh that failed because the network did is not evidence
+   * about the session, and spending the account on it left the user with an
+   * account they could only delete.
+   */
   markSessionDead(id: string): void {
     void this.mutate(id, current => ({ ...current, sessionDead: true, updatedAtMs: Date.now() }))
   }
@@ -507,13 +685,22 @@ export class WorkBuddyAccountPool {
   }
 
   /**
-   * The next account to try, excluding ids already tried in this request.
+   * The next account to try, excluding ids already attempted by this caller.
    *
    * Least-recently-used wins, with pool order as the tiebreak. LRU rather than
    * round-robin because a restart, a new sign-in, or a user reorder all reset
    * a cursor but leave "when did this account last work" meaningful.
    *
+   * **Claiming is synchronous, and that is the point.** Selection used to be a
+   * pure read plus a later `Date.now()` write from the caller, so two
+   * conversations started in the same millisecond both looked at the same
+   * snapshot and both picked the same account — precisely when spreading the
+   * load matters, because that is the case where one 429 is about to fail the
+   * other user message too. A persistent counter, stamped here before anything
+   * is awaited, makes every claim distinct whatever the clock resolution is.
+   *
    * @param tried - identities already attempted for the request in flight.
+   * @param now - wall clock for availability decisions only.
    */
   next(tried: ReadonlySet<string>, now = Date.now()): WorkBuddyAccount | undefined {
     let best: WorkBuddyAccount | undefined
@@ -522,7 +709,27 @@ export class WorkBuddyAccountPool {
       if (!this.isAvailable(account, now)) continue
       if (best === undefined || account.lastUsedAtMs < best.lastUsedAtMs) best = account
     }
-    return best
+    if (best === undefined) return undefined
+    const claimed: WorkBuddyAccount = { ...best, lastUsedAtMs: this.claimClock(now) }
+    const index = this.load().indexOf(best)
+    if (index >= 0) {
+      // Assigned in place: the caller gets the row it claimed, and a later
+      // commit of the same account starts from the claim rather than
+      // overwriting it with a wall-clock value that could be lower.
+      ;(this.accounts as WorkBuddyAccount[])[index] = claimed
+    }
+    return claimed
+  }
+
+  /**
+   * A strictly increasing stamp for one claim, seeded from the wall clock.
+   *
+   * Strictly increasing even when the clock stands still or steps backwards, so
+   * "most recently claimed" stays a real ordering.
+   */
+  private claimClock(now: number): number {
+    this.claimSeq = Math.max(this.claimSeq + 1, now)
+    return this.claimSeq
   }
 
   /**
@@ -594,6 +801,10 @@ export class WorkBuddyAccountPool {
       }
     }
     this.accounts = accounts
+    // Seeded from the rows so a restart cannot hand out a stamp older than one
+    // already stored, which would make a fresh claim look like the least
+    // recently used account.
+    this.claimSeq = accounts.reduce((highest, account) => Math.max(highest, account.lastUsedAtMs), Date.now())
     return accounts
   }
 

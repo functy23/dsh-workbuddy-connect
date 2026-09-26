@@ -42,6 +42,23 @@ interface SavedVisibility {
   account: string
   /** Model ids hidden from this account's picker; never auto-pruned. */
   disabled: readonly string[]
+  /**
+   * The account's "only show these" allowlist, when it has one.
+   *
+   * A SECOND list beside {@link disabled} rather than a reinterpretation of it,
+   * because the two answer different questions and converting between them is
+   * not possible from the stored data alone: `disabled` names what to hide,
+   * while an allowlist only means anything against a catalog (everything not
+   * listed is hidden), and the catalog is not persisted here. Keeping both lets
+   * a saved hide-list survive a user trying the allowlist and switching back.
+   *
+   * Absent or empty means "no allowlist" — every model is shown unless
+   * `disabled` says otherwise. That is the same empty-default the reference
+   * implementation uses, and it is why this is not a `mode` flag: an empty
+   * allowlist and no allowlist are the same state, so storing a separate flag
+   * would let the file describe a mode it has no list for.
+   */
+  allowlist?: readonly string[]
   /** When this account's list last changed, epoch milliseconds. */
   updatedAtMs: number
 }
@@ -64,7 +81,10 @@ function isSaved(value: unknown): value is SavedVisibility {
   if (typeof entry['updatedAtMs'] !== 'number' || !Number.isFinite(entry['updatedAtMs'])) return false
   const disabled = entry['disabled']
   if (!Array.isArray(disabled)) return false
-  return disabled.every(id => typeof id === 'string' && id !== '')
+  if (!disabled.every(id => typeof id === 'string' && id !== '')) return false
+  const allowlist = entry['allowlist']
+  if (allowlist === undefined) return true
+  return Array.isArray(allowlist) && allowlist.every(id => typeof id === 'string' && id !== '')
 }
 
 /** Options for {@link WorkBuddyVisibilityStore}. */
@@ -122,6 +142,79 @@ export class WorkBuddyVisibilityStore {
   /** The model ids one account has hidden; empty when it never hid any. */
   disabled(account: string): readonly string[] {
     return this.load()[account]?.disabled ?? []
+  }
+
+  /**
+   * The ids one account allows, when it narrowed the list; undefined = no
+   * allowlist, i.e. show everything {@link disabled} does not hide.
+   *
+   * undefined and `[]` are deliberately NOT the same value here even though
+   * both are stored as an absent list: a caller asking "did the user narrow
+   * this?" needs to know, and only the caller can decide whether an empty
+   * allowlist means "nothing allowed" or "no filter". Storage keeps no such
+   * distinction (see {@link SavedVisibility.allowlist}), so this returns
+   * undefined for both and the caller's own empty-string check is what tells
+   * the cases apart.
+   */
+  allowlist(account: string): readonly string[] | undefined {
+    const saved = this.load()[account]?.allowlist
+    return saved === undefined || saved.length === 0 ? undefined : saved
+  }
+
+  /**
+   * Replace one account's allowlist.
+   *
+   * Passing undefined (or an empty list) clears it, which restores the state
+   * where the account shows everything `disabled` does not hide — that is what
+   * the card's "show all" action does, and it is deliberately the same call as
+   * "narrow to these": one method, one meaning per argument.
+   *
+   * The hidden list is untouched by an allowlist write. A model in `disabled`
+   * stays hidden if it is later added to the allowlist only through the
+   * subtraction below — see {@link effectiveHidden}, which is what every reader
+   * must go through.
+   */
+  setAllowlist(account: string, ids: readonly string[] | undefined): void {
+    const current = this.load()[account]
+    const next = ids === undefined || ids.length === 0 ? undefined : [...new Set(ids)]
+    const accounts = { ...this.load() }
+    if (next === undefined && (current === undefined || current.disabled.length === 0)) {
+      // Nothing to store either way: the account has no preferences at all.
+      delete accounts[account]
+      this.persist(accounts)
+      this.accounts = accounts
+      return
+    }
+    accounts[account] = {
+      account,
+      disabled: current?.disabled ?? [],
+      ...next === undefined ? {} : { allowlist: next },
+      updatedAtMs: Date.now(),
+    }
+    this.persist(accounts)
+    this.accounts = accounts
+  }
+
+  /**
+   * The ids the picker must actually hide for one account: the union of the
+   * allowed-list's complement and the explicit hide-list.
+   *
+   * The ONE reader every caller uses. With an allowlist set, everything outside
+   * it is hidden, and an id in `disabled` stays hidden even if it was also
+   * allowed — the two lists can disagree (a stale allowlist entry beside an
+   * explicit hide), and "hidden" winning is the only resolution that does not
+   * resurrect a model the user turned off.
+   */
+  effectiveHidden(account: string, catalogIds: readonly string[]): readonly string[] {
+    const saved = this.load()[account]
+    if (saved === undefined) return []
+    const allowlist = saved.allowlist
+    const hidden = new Set(saved.disabled)
+    if (allowlist !== undefined && allowlist.length > 0) {
+      const allowed = new Set(allowlist)
+      for (const id of catalogIds) if (!allowed.has(id)) hidden.add(id)
+    }
+    return [...hidden]
   }
 
   /**

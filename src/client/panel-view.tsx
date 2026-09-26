@@ -15,13 +15,15 @@
  * `sidebar.panellist` row, whose button chrome the SHELL owns, this entry owns
  * its whole surface and therefore calls `open()` itself.
  *
- * Styles ride the stylesheet `./panel-styles.ts` returns, injected once by the
- * client entry.
+ * Styles ride the two stylesheets `./ui-styles.ts` returns (the panel's own, and
+ * the settings page's shared row pieces), injected once by the client entry.
  *
  * @module dsh-workbuddy-connect/client/panel-view
  */
 
 import type { ReactNode } from 'react'
+import { Badge, Ring, StatTile as UiStatTile, cx } from './ui-rows.tsx'
+import { ActionButton } from './ui-button.tsx'
 import type { WorkBuddyPanelStore } from './panel-store.ts'
 import { panelTranslator } from './panel-copy.ts'
 import type { PanelKey, PanelTranslator } from './panel-copy.ts'
@@ -113,30 +115,20 @@ function translatorOf(props: PanelComponentProps): PanelTranslator {
   return panelTranslator(props.t)
 }
 
-/** One small glyph: a filled dot whose colour follows the product's state. */
-function stateClass(product: PanelProductView): string {
-  if (product.state === 'signed-in') return 'wbp-state wbp-stateOk'
-  if (product.state === 'error') return 'wbp-state wbp-stateError'
-  if (product.state === 'signed-out') return 'wbp-state wbp-stateWarn'
-  return 'wbp-state'
+/** The tag tone a product's sign-in state earns. */
+function stateTone(product: PanelProductView): 'success' | 'danger' | 'warning' | 'neutral' {
+  if (product.state === 'signed-in') return 'success'
+  if (product.state === 'error') return 'danger'
+  if (product.state === 'signed-out') return 'warning'
+  return 'neutral'
 }
 
-/** One labelled figure. */
-function StatTile({ label, value, pending, t }: {
-  label: PanelKey
-  value: string
-  pending?: PanelKey | undefined
-  t: PanelTranslator
-}): ReactNode {
-  const empty = value === ''
-  return (
-    <div className="wbp-stat">
-      <span className="wbp-statLabel">{t(label)}</span>
-      <span className={empty ? 'wbp-statValue wbp-statValueEmpty' : 'wbp-statValue'}>
-        {empty ? (pending === undefined ? '' : t(pending)) : value}
-      </span>
-    </div>
-  )
+/** One product's state as words. */
+function stateText(product: PanelProductView, t: PanelTranslator): string {
+  if (product.state === 'signed-in') return t('signedIn')
+  if (product.state === 'signed-out') return t('signedOut')
+  if (product.state === 'error') return t('failure')
+  return t('loading')
 }
 
 /** The figures shared by both surfaces for one product. */
@@ -144,46 +136,42 @@ function statValue(product: PanelProductView, label: PanelKey): string {
   return product.stats.find(stat => stat.label === label)?.value ?? ''
 }
 
-/** The pending key of one product's credit figure, when it has none. */
-function statPending(product: PanelProductView, label: PanelKey): PanelKey | undefined {
-  return product.stats.find(stat => stat.label === label)?.pending
-}
-
-/** One product's full block on the dashboard. */
+/**
+ * One product on the dashboard: its identity, its state, and its figures.
+ *
+ * Built from the same row pieces the settings page uses, so the two surfaces are
+ * visibly the same product's UI. The block is a `<section>` of rows rather than
+ * a card because the reference layout has no card surfaces at all.
+ */
 function ProductCard({ product, t }: { product: PanelProductView; t: PanelTranslator }): ReactNode {
-  const stateText = product.state === 'signed-in'
-    ? t('signedIn')
-    : product.state === 'signed-out'
-      ? t('signedOut')
-      : product.state === 'error'
-        ? t('failure')
-        : t('loading')
+  const tone = stateTone(product)
   return (
-    <section className="wbp-card">
+    <section className="wbp-card" aria-label={product.name}>
       <div className="wbp-cardHead">
-        <span className="wbp-cardName">{product.name}</span>
-        <span className={stateClass(product)}>{stateText}</span>
+        <span className="wbp-avatar" aria-hidden="true">{product.name.slice(0, 1).toUpperCase()}</span>
+        <span className="wbp-cardIdentity">
+          <span className="wbp-cardTitle">{product.name}</span>
+        </span>
         <span className="wbp-spacer" />
-        {product.benched > 0 ? (
-          <span className="wbp-state wbp-stateWarn">{t('benched', { count: product.benched })}</span>
-        ) : null}
+        <Badge tone={tone === 'success' ? 'plain' : tone === 'danger' ? 'error' : tone === 'warning' ? 'warn' : 'muted'}>
+          {stateText(product, t)}
+        </Badge>
+        {product.benched > 0 ? <Badge tone="warn">{t('benched', { count: product.benched })}</Badge> : null}
         {product.catalogSource === 'none' ? null : (
-          <span className="wbp-state">
+          <Badge tone="muted">
             {t(product.catalogSource === 'live'
               ? 'sourceLive'
               : product.catalogSource === 'saved' ? 'sourceSaved' : 'sourceFallback')}
-          </span>
+          </Badge>
         )}
       </div>
-      {product.detail === undefined ? null : <p className="wbp-detail">{product.detail}</p>}
-      <div className="wbp-stats">
+      {product.detail === undefined ? null : <p className="wbp-noticeHint">{product.detail}</p>}
+      <div className="wbp-tiles">
         {product.stats.map(stat => (
-          <StatTile
+          <UiStatTile
             key={stat.label}
-            label={stat.label}
-            value={stat.value}
-            pending={stat.pending}
-            t={t}
+            label={t(stat.label)}
+            value={stat.value === '' ? (stat.pending === undefined ? '' : t(stat.pending)) : stat.value}
           />
         ))}
       </div>
@@ -205,52 +193,61 @@ export function WorkBuddyPanel(props: WorkBuddyPanelProps): ReactNode {
   const t = translatorOf(props)
 
   return (
-    <div className="wbp-panel">
-      <header className="wbp-head">
-        <h2 className="wbp-title">{t('nav')}</h2>
-        <span className="wbp-spacer" />
-        <div className="wbp-headActions">
-          <button type="button" className="wbp-button" onClick={() => { props.refresh() }}>
-            {t('refresh')}
-          </button>
-          <button type="button" className="wbp-button" onClick={() => { props.close() }}>
-            {t('close')}
-          </button>
-        </div>
-      </header>
-
-      {!view.available && !view.loading ? (
-        <div className="wbp-notice">
-          <p className="wbp-hint">{t('unavailable')}</p>
-        </div>
-      ) : null}
-
-      {view.loading ? <p className="wbp-hint">{t('loading')}</p> : null}
-
-      {view.available ? (
-        <div className="wbp-summary">
-          <span className="wbp-chip">
-            <span>{t('accounts')}</span>
-            <span className="wbp-chipValue wbp-num">{view.accountCount}</span>
+    // The dashboard is the panel's own scrollport: the layout hands the `main`
+    // cell the whole centre column, so this element owns the background and the
+    // scrolling, and the content column inside it is the same 760px column the
+    // reference's dashboard uses.
+    <div className="wbp-main">
+      <div className="wbp-mainInner">
+        <header className="wbp-header">
+          <Ring percent={ringPercent(view)} warn={view.benchedCount > 0} size={20} />
+          <span className="wbp-headerText">
+            <h2 className="wbp-titleLg">{t('nav')}</h2>
+            <p className="wbp-subtitle">{view.available ? t('footerLabel') : t('unavailable')}</p>
           </span>
-          <span className="wbp-chip">
-            <span>{t('models')}</span>
-            <span className="wbp-chipValue wbp-num">{view.modelCount}</span>
-          </span>
-          {view.benchedCount > 0 ? (
-            <span className="wbp-chip">
-              <span className="wbp-chipValue wbp-num">{view.benchedCount}</span>
-              <span>{t('benched', { count: view.benchedCount })}</span>
-            </span>
-          ) : null}
-        </div>
-      ) : null}
+          <span className="wbp-spacer" />
+          <ActionButton label={t('refresh')} onClick={() => { props.refresh() }} />
+          <ActionButton label={t('close')} onClick={() => { props.close() }} />
+        </header>
 
-      {view.products.map(product => (
-        <ProductCard key={product.id} product={product} t={t} />
-      ))}
+        {!view.available && !view.loading ? (
+          <div className="wbp-notice wbp-noticeError" role="status">
+            <p className="wbp-noticeTitle">{t('failure')}</p>
+            <p className="wbp-noticeHint">{t('unavailable')}</p>
+          </div>
+        ) : null}
+
+        {view.loading ? <p className="wbp-hint">{t('loading')}</p> : null}
+
+        {view.available ? (
+          <div className="wbp-tiles">
+            <UiStatTile label={t('accounts')} value={String(view.accountCount)} />
+            <UiStatTile label={t('models')} value={String(view.modelCount)} />
+            {view.benchedCount === 0
+              ? null
+              : <UiStatTile label={t('benched', { count: view.benchedCount })} value={String(view.benchedCount)} />}
+          </div>
+        ) : null}
+
+        {view.products.map(product => (
+          <ProductCard key={product.id} product={product} t={t} />
+        ))}
+      </div>
     </div>
   )
+}
+
+/**
+ * The header ring's sweep: how much of what the pools hold is servable now.
+ *
+ * A ring rather than a number because the header has no room for a sentence, and
+ * "everything is fine" is the state a glance should confirm. With nothing read
+ * yet the ring is empty rather than full, so "nothing known" does not look like
+ * "all healthy".
+ */
+function ringPercent(view: PanelView): number {
+  if (view.accountCount === 0) return 0
+  return ((view.accountCount - view.benchedCount) / view.accountCount) * 100
 }
 
 /**
@@ -277,16 +274,18 @@ export function WorkBuddyFooterEntry(props: WorkBuddyFooterEntryProps): ReactNod
 
   useEffectOnce(startAutoRefresh)
 
+  const label = view.footTitle === '' ? t('footerLabel') : view.footTitle
+
   if (!props.wide) {
     return (
       <button
         type="button"
         className="wbp-railButton"
         aria-label={t('railLabel')}
-        title={view.footTitle === '' ? t('footerLabel') : view.footTitle}
+        title={label}
         onClick={() => { props.open() }}
       >
-        <Glyph size={18} />
+        <Ring percent={ringPercent(view)} warn={view.benchedCount > 0} size={18} />
       </button>
     )
   }
@@ -295,52 +294,98 @@ export function WorkBuddyFooterEntry(props: WorkBuddyFooterEntryProps): ReactNod
     <button
       type="button"
       className="wbp-foot"
-      aria-label={view.footTitle === '' ? t('footerLabel') : view.footTitle}
-      title={view.footTitle === '' ? t('footerLabel') : view.footTitle}
+      aria-label={label}
+      title={label}
       onClick={() => { props.open() }}
+      // A double-click re-reads rather than opening: the card is always on
+      // screen, so "this is stale" is the one thing the click cannot express.
       onDoubleClick={() => { refresh() }}
     >
       <span className="wbp-footTop">
-        <Glyph size={16} />
         <span className="wbp-footName">{t('nav')}</span>
         <span className="wbp-spacer" />
       </span>
-      <span className="wbp-footLines">
-        {view.products.map(product => (
-          <span className="wbp-footLine" key={product.id}>
-            <span className="wbp-footLineLabel">{product.name}</span>
-            <span className="wbp-spacer" />
-            {product.state === 'signed-in' ? (
-              <>
-                <span className="wbp-num">{statValue(product, 'accountCount')}</span>
-                <span className="wbp-num">
-                  {statValue(product, 'creditTotal') === ''
-                    ? t(statPending(product, 'creditTotal') ?? 'creditPending')
-                    : statValue(product, 'creditTotal')}
-                </span>
-              </>
-            ) : (
-              <span>{product.state === 'signed-out' ? t('signedOut') : t('failure')}</span>
+      {/*
+        * One line per product — or one line plus a ratio bar — according to the
+        * display style the user chose in the settings ({@link view.creditStyle}):
+        *
+        * - `'remaining'` (default): the balance alone, named by the product it
+        *   belongs to. The label carries the meaning ("WorkBuddy 剩余额度"), so
+        *   the figure needs no column header, and the number that leads is the
+        *   one people open the sidebar for — not the capacity ("/ 6200" across
+        *   two accounts' 2800 + 3400), which is what the older shape led with.
+        * - `'usage'`: the reference provider card's shape, a "used / total" pair
+        *   over a bar of that ratio, which states how much of the cycle has been
+        *   spent as well as what is left.
+        *
+        * Both are the same pool described twice; nothing is derived differently,
+        * and the two products stay on their own lines in either style because
+        * their credits are not convertible.
+        *
+        * Which products appear is the view model's call (footProducts), so that
+        * decision stays testable without a DOM.
+        */}
+      {view.footProducts.map(product => {
+        const remaining = product.creditsRemaining
+        const capacity = product.creditsCapacity
+        const format = (value: number): string =>
+          new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)
+        // Used is derived, never fetched: the upstream bills a balance and a cap,
+        // and the spent amount is what is left over. Deriving it here keeps the
+        // one invariant the pair has to satisfy — used + remaining === capacity —
+        // true by construction, even against an upstream that reports a balance
+        // above its own cap (clamped below, so the bar cannot exceed 100%).
+        const used = capacity === undefined || remaining === undefined
+          ? undefined
+          : Math.max(0, capacity - remaining)
+        const percent = capacity === undefined || capacity <= 0 || used === undefined
+          ? 0
+          : Math.min(100, (used / capacity) * 100)
+        const usageStyle = view.creditStyle === 'usage'
+        return (
+          // The two styles need different shapes, not just different words: the
+          // usage style stacks a head line over a full-width bar, the remaining
+          // style is a single line.
+          <span key={product.id} className={cx('wbp-footRow', usageStyle && 'wbp-footRowUsage')}>
+            <span className="wbp-footHead">
+              <span className="wbp-footLabel">
+                {usageStyle ? product.name : t('creditRemainingLabel', { product: product.name })}
+              </span>
+              <span className="wbp-footAmount">
+                {product.state !== 'signed-in'
+                  ? stateText(product, t)
+                  : usageStyle
+                    ? used === undefined || capacity === undefined
+                      ? remaining === undefined ? t('creditPending') : t('creditRemaining', { remaining: format(remaining) })
+                      : t('creditUsed', { used: format(used), total: format(capacity) })
+                    : remaining === undefined
+                      ? t('creditPending')
+                      : format(remaining)}
+              </span>
+            </span>
+            {!usageStyle || product.state !== 'signed-in' || capacity === undefined ? null : (
+              <span
+                className="wbp-footBar"
+                role="progressbar"
+                aria-label={product.name}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round(percent)}
+              >
+                <span className="wbp-footFill" style={{ width: `${String(percent)}%` }} />
+              </span>
             )}
           </span>
-        ))}
-      </span>
+        )
+      })}
     </button>
   )
 }
 
-/**
- * A 20×20 mark for the rail button. A glyph rather than an icon dependency:
- * the panel needs exactly one, and a package import would be a second client
- * module the browser has to resolve for one shape.
- */
-function Glyph({ size }: { size: number }): ReactNode {
-  return (
-    <span className="wbp-glyph" aria-hidden="true">
-      <svg viewBox="0 0 20 20" width={size} height={size} focusable="false">
-        <circle cx="10" cy="10" r="7.25" fill="none" stroke="currentColor" strokeWidth="1.5" opacity="0.45" />
-        <path d="M6.4 10.2 L9 12.8 L13.8 7.4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    </span>
-  )
+/** Read a numeric stat back out of a product block, for the card's bar. */
+function countOf(product: PanelProductView, label: PanelKey): number {
+  const value = statValue(product, label)
+  // The figure was formatted for display; grouping separators are the only
+  // thing between it and a number.
+  return Number(value.replace(/\D/gu, '')) || 0
 }

@@ -11,10 +11,10 @@ let context: Context | undefined
 let root: string | undefined
 
 /** A desktop-shaped credential document for one upstream region. */
-function credentialDocument(domain: string): string {
+function credentialDocument(domain: string, uid = 'uid-1'): string {
   return JSON.stringify({
     auth: { accessToken: 'at', refreshToken: 'rt', expiresAt: Date.now() + 3_600_000, domain },
-    account: { uid: 'uid-1', nickname: 'nick', enterpriseId: 'ent-1' },
+    account: { uid, nickname: uid, enterpriseId: 'ent-1' },
   })
 }
 
@@ -87,7 +87,7 @@ describe('WorkBuddy Host settings integration', () => {
   it('applies a maximum-window write to the very next request, and honors an opt-out', async () => {
     root = await mkdtemp(join(tmpdir(), 'workbuddy-context-restart-'))
     const aiFile = join(root, 'ai.info')
-    await writeFile(aiFile, credentialDocument('www.workbuddy.ai'))
+    await writeFile(aiFile, credentialDocument('www.workbuddy.ai', 'uid-ai'))
     vi.stubEnv('DSH_HOME', root)
     vi.stubEnv('WORKBUDDY_AUTH_FILE', join(root, 'absent-cn.info'))
     vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', aiFile)
@@ -130,12 +130,19 @@ describe('WorkBuddy Host settings integration', () => {
     await vi.waitFor(() => {
       expect(ctx.llm.listProviders().map(provider => provider.id)).toContain('workbuddy')
     })
-    // No configurable-provider directory entry by design: the Models settings
-    // page joins its rows on that registration, so omitting it keeps these
-    // providers off that page (its editor has no fields for them). The group
-    // still serves models through the adapter.
-    expect(ctx.llm.listConfigurableProviders().map(entry => entry.provider))
-      .not.toContain('workbuddy')
+    // A configurable-provider directory entry IS made, and it is what puts this
+    // provider's row on the Models settings page. The row used to be omitted
+    // (the page's own editor has no fields for a WorkBuddy provider), but the
+    // row is now the anchor for a surface the page does own: the plugin
+    // registers its own card into the row's `settings.models.provider-card`
+    // keyed slot, and a keyed slot with no row to dispatch it renders nowhere.
+    // The group still serves models through the adapter, which is a separate
+    // registration.
+    const directoryEntry = ctx.llm.listConfigurableProviders().find(entry => entry.provider === 'workbuddy')
+    expect(directoryEntry).toBeDefined()
+    // The card registers under this exact string, so the two halves agreeing on
+    // it is what makes the card reach its row.
+    expect(directoryEntry?.settingsNs).toBe(WorkBuddy.WORKBUDDY_SETTINGS_NS)
 
     // The fields are still SERVED: on 0.1.7 the plugin's profile entry IS its
     // settings namespace, so the native editor and the settings wire read the
@@ -205,7 +212,7 @@ describe('WorkBuddy Host settings integration', () => {
     const cnFile = join(root, 'cn.info')
     const aiFile = join(root, 'ai.info')
     await writeFile(cnFile, credentialDocument('copilot.tencent.com'))
-    await writeFile(aiFile, credentialDocument('www.workbuddy.ai'))
+    await writeFile(aiFile, credentialDocument('www.workbuddy.ai', 'uid-ai'))
     vi.stubEnv('WORKBUDDY_AUTH_FILE', cnFile)
     vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', aiFile)
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline in tests') }))
@@ -218,12 +225,18 @@ describe('WorkBuddy Host settings integration', () => {
       )
     })
 
-    // Directory entries stay absent by design: the two providers serve models
-    // and own their settings sections, but the Models settings page must not
-    // list them as editable rows, so no configurable-provider entry is made.
-    const configurable = ctx.llm.listConfigurableProviders().map(entry => entry.provider)
-    expect(configurable).not.toContain('workbuddy')
-    expect(configurable).not.toContain('workbuddy-ai')
+    // One directory entry per variant: these are what the Models settings page
+    // joins its provider rows on, and each row is where that variant's card
+    // renders. Both address the same settings document (see the namespace
+    // contract below) because on 0.1.7 a plugin has exactly one.
+    const configurable = ctx.llm.listConfigurableProviders()
+    const byProvider = new Map(configurable.map(entry => [entry.provider, entry]))
+    expect([...byProvider.keys()]).toEqual(expect.arrayContaining(['workbuddy', 'workbuddy-ai']))
+    for (const id of ['workbuddy', 'workbuddy-ai']) {
+      expect(byProvider.get(id)?.settingsNs).toBe(WorkBuddy.WORKBUDDY_SETTINGS_NS)
+      // `[]` means the whole section is this provider's profile.
+      expect(byProvider.get(id)?.settingsPath).toEqual([])
+    }
 
     // THE NAMESPACE CONTRACT (0.1.7). A plugin's composition entry IS its
     // settings namespace there, so both products' fields live in ONE document:
@@ -252,19 +265,36 @@ describe('WorkBuddy Host settings integration', () => {
     //
     // Observable chosen deliberately: point `authFileAI` at a file holding a
     // CN-domain credential. If the write really reached the AI store, that
-    // store refuses the cross-product credential and the AI group empties; the
-    // CN group must be untouched. A mis-routed write would instead empty the
-    // CN group — so the assertion distinguishes "reached the AI store" from
-    // "reached some store".
+    // store REFUSES the cross-product credential — so the refused identity must
+    // never appear in the AI pool while the CN pool is untouched. A mis-routed
+    // write would land a CN-region credential in the CN pool instead, and the
+    // CN file would gain it.
+    //
+    // The refusal no longer EMPTIES the group, and that is deliberate: a bad
+    // desktop path must not take away accounts the user added by those other
+    // routes. (Emptying it is what the throwing read used to do, and on the
+    // international variant the same throw took the whole status route down with
+    // it.) The refused credential is reported through the status document's
+    // `desktopError` instead, and the pool keeps serving.
     const wrongRegionForAi = join(root, 'cn-credential-for-ai.info')
-    await writeFile(wrongRegionForAi, credentialDocument('copilot.tencent.com'))
+    await writeFile(wrongRegionForAi, credentialDocument('copilot.tencent.com', 'uid-cn-wrong'))
     await ctx.settings.update(ENTRY, { authFileAI: wrongRegionForAi })
-    // A bounded settle rather than waitFor: if the wiring were broken the group
-    // would simply never change, and an assertion states that plainly instead
-    // of surfacing as a timeout. Two sweeps at the 100 ms interval above.
+    // A bounded settle rather than waitFor: if the wiring were broken the pool
+    // would simply never change, and an assertion states that plainly instead of
+    // surfacing as a timeout. Two sweeps at the 100 ms interval above.
     await new Promise(resolve => setTimeout(resolve, 400))
-    expect(await ctx.llm.listModels('workbuddy-ai')).toEqual([])
+    const poolUids = async (file: string): Promise<string[]> => {
+      const parsed = JSON.parse(await readFile(join(root as string, file), 'utf8')) as { accounts?: { uid?: string }[] }
+      return (parsed.accounts ?? []).map(account => account.uid ?? '')
+    }
+    // The refused CN credential is nowhere in the AI pool, and the account that
+    // was legitimately captured from the international file is still there.
+    expect(await poolUids('.workbuddy-ai-accounts.json')).toEqual(['uid-ai'])
+    // The CN pool never saw the mis-routed write at all.
+    expect(await poolUids('.workbuddy-accounts.json')).toEqual(['uid-1'])
     expect((await ctx.llm.listModels('workbuddy')).length).toBeGreaterThan(0)
+    // The group survives a desktop file it cannot use.
+    expect((await ctx.llm.listModels('workbuddy-ai')).length).toBeGreaterThan(0)
 
     // And the setting is genuinely read back through the merged config: putting
     // a valid international file back restores the group.
@@ -366,7 +396,7 @@ describe('WorkBuddy Host settings integration', () => {
     root = await mkdtemp(join(tmpdir(), 'dsh-workbuddy-connect-no-settings-api-'))
     vi.stubEnv('DSH_HOME', root)
     const aiFile = join(root, 'ai.info')
-    await writeFile(aiFile, credentialDocument('www.workbuddy.ai'))
+    await writeFile(aiFile, credentialDocument('www.workbuddy.ai', 'uid-ai'))
     vi.stubEnv('WORKBUDDY_AUTH_FILE', join(root, 'absent-cn.info'))
     vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', aiFile)
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline in tests') }))

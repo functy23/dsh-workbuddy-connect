@@ -22,6 +22,7 @@ import type { WorkBuddyCredential } from './auth.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { prepareChatBody, type UpstreamErrorKind, type WorkBuddyChatResult } from './upstream.ts'
+import { readUsageBlock, usageFieldNames, type WorkBuddyRequestUsage } from './usage-store.ts'
 
 /** Minimal logger surface the plugin context already provides. */
 export interface ShimLogger {
@@ -57,6 +58,34 @@ export interface WorkBuddyShim {
  */
 export interface WorkBuddyChatSender {
   send(body: string, signal?: AbortSignal): Promise<WorkBuddyChatResult>
+}
+
+/**
+ * What the sender hands back once an answer is on its way.
+ *
+ * `account` is the pool member the request was actually served by. It travels
+ * beside the result because the shim is the only place that sees the ANSWER, and
+ * the answer is where the upstream states what the request cost — so usage can
+ * be attributed to an account only by joining those two facts here.
+ */
+export interface WorkBuddyChatDelivery {
+  result: WorkBuddyChatResult
+  /** Pool account id that produced the answer, when one did. */
+  account?: string
+}
+
+/**
+ * What one relayed request reported about its own cost.
+ *
+ * The shim parses the upstream's usage block out of the stream it is already
+ * forwarding (nothing extra is requested upstream), and hands it to this
+ * callback after the stream ends. Absent when the answer carried no usage block
+ * at all — the recorder counts the request either way, and reports how many of
+ * them came with numbers.
+ */
+export interface WorkBuddyUsageReport {
+  account: string
+  usage: WorkBuddyRequestUsage
 }
 
 /** Constructor dependencies. */

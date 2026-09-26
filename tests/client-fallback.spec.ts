@@ -42,7 +42,17 @@ interface Harness {
 }
 
 /** Which slot declarations exist, so the inject callbacks fire (and register). */
-const ALL_SLOTS = ['settings.section', 'sidebar.footer.action', 'main', 'conversation.session.header.utilities', 'conversation.input.right']
+const ALL_SLOTS = [
+  'settings.section',
+  // Declared by the Models settings page, which dispatches it per provider row.
+  // Absent on a host without that page: the contribution then never registers,
+  // which is the designed degradation rather than a failure.
+  'settings.models.provider-card',
+  'sidebar.footer.action',
+  'main',
+  'conversation.composer.dock',
+  'conversation.input.right',
+]
 
 /**
  * Build the fake host context. `failInject` throws from a `ctx.slots.inject`
@@ -127,21 +137,25 @@ function harness(options: {
 
 /**
  * The registrations a fully successful `apply()` makes, in order: the dashboard
- * cell, its sidebar card, the settings page, the floating window, and the
- * composer probe.
+ * cell, its sidebar card, the settings page, the Models-page provider card, the
+ * composer credit badge, and the composer probe.
  */
 const ALL_REGISTRATIONS: RecordedRegistration[] = [
   { name: 'main', key: PANEL_ID },
   { name: 'sidebar.footer.action', id: PANEL_ID },
   { name: 'settings.section', id: 'dsh-workbuddy' },
-  { name: 'conversation.session.header.utilities', id: 'workbuddy-floating-accounts' },
+  // Keyed by the settings namespace the Host's configurable-provider directory
+  // entry carries, because that is what the Models page dispatches the slot
+  // with — a different string here would register a card that renders nowhere.
+  { name: 'settings.models.provider-card', key: 'llm-workbuddy' },
+  { name: 'conversation.composer.dock', id: 'workbuddy-credit-badge' },
   { name: 'conversation.input.right', id: 'workbuddy-probe' },
 ]
 
 /** Every slot `apply()` injects into, in call order. */
 const ALL_INJECTED = [
-  'main', 'sidebar.footer.action', 'settings.section',
-  'conversation.session.header.utilities', 'conversation.input.right',
+  'main', 'sidebar.footer.action', 'settings.section', 'settings.models.provider-card',
+  'conversation.composer.dock', 'conversation.input.right',
 ]
 
 afterEach(() => {
@@ -160,8 +174,9 @@ describe('client contribution isolation', () => {
 
   it('keeps every other surface when the dashboard cell registration throws', () => {
     // The deferred register for the `main` cell breaks (e.g. the key
-    // collides); the isolation contract: the sidebar card, the settings page,
-    // the floating window, and the probe control all still register.
+    // collides); the isolation contract: every other surface — the sidebar card,
+    // the settings page, the Models-page card, the floating window, and the
+    // probe control — still registers.
     const h = harness({ failRegister: name => name === 'main'
       ? 'keyed slot already has an entry for key workbuddy-panel'
       : undefined })
@@ -169,7 +184,8 @@ describe('client contribution isolation', () => {
     expect(h.registered).toEqual([
       { name: 'sidebar.footer.action', id: PANEL_ID },
       { name: 'settings.section', id: 'dsh-workbuddy' },
-      { name: 'conversation.session.header.utilities', id: 'workbuddy-floating-accounts' },
+      { name: 'settings.models.provider-card', key: 'llm-workbuddy' },
+      { name: 'conversation.composer.dock', id: 'workbuddy-credit-badge' },
       { name: 'conversation.input.right', id: 'workbuddy-probe' },
     ])
     expect(h.errors).toHaveLength(1)
@@ -185,7 +201,8 @@ describe('client contribution isolation', () => {
     expect(h.registered).toEqual([
       { name: 'main', key: PANEL_ID },
       { name: 'sidebar.footer.action', id: PANEL_ID },
-      { name: 'conversation.session.header.utilities', id: 'workbuddy-floating-accounts' },
+      { name: 'settings.models.provider-card', key: 'llm-workbuddy' },
+      { name: 'conversation.composer.dock', id: 'workbuddy-credit-badge' },
       { name: 'conversation.input.right', id: 'workbuddy-probe' },
     ])
     expect(h.errors).toHaveLength(1)
@@ -199,7 +216,9 @@ describe('client contribution isolation', () => {
       ? 'slot conversation.input.right is not declared'
       : undefined })
     expect(() => apply(h.ctx)).not.toThrow()
-    expect(h.registered).toEqual(ALL_REGISTRATIONS.slice(0, 4))
+    // Everything before the probe seat: main, the footer card, the settings
+    // section, the Models-page card, the floating window.
+    expect(h.registered).toEqual(ALL_REGISTRATIONS.slice(0, 5))
     expect(h.enteredModelDirectories()).toBe(true)
     expect(h.errors).toHaveLength(1)
     expect(String(h.errors[0])).toContain('conversation probe control')
@@ -226,6 +245,7 @@ describe('client contribution isolation', () => {
     expect(h.registered).toEqual([])
     expect(h.injectedSlots).toEqual([])
     expect(h.enteredModelDirectories()).toBe(true)
-    expect(h.errors).toHaveLength(5)
+    // Six slot contributions, one degradation each.
+    expect(h.errors).toHaveLength(6)
   })
 })
