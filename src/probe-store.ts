@@ -3,10 +3,10 @@
  *
  * What this stores is an *observation*, never a claim about the upstream: a
  * model's row is only consulted when the catalog carries no explicit
- * `supportedEfforts` set, and it always loses to a declared set. The plan this
- * implements (`docs/reasoning-effort-probe-plan.md` §5) requires that a result
- * is invalidated whenever the model's catalog row changes, so every record
- * carries a fingerprint of the fields the probe depended on.
+ * `supportedEfforts` set, and it always loses to a declared set. A result is
+ * invalidated whenever the model's catalog row changes — a spelling accepted by
+ * one build of a model says nothing about the next — so every record carries a
+ * fingerprint of the fields the probe depended on.
  *
  * The file lives beside the plugin's own credential copy under `$DSH_HOME`,
  * never in the desktop app's files, and carries no token, prompt, or response

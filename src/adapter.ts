@@ -202,7 +202,7 @@ export interface WorkBuddyAdapter {
  * `thinkingLevelMap` (every level pinned to its wire spelling or `null` for
  * unsupported), mirroring `dsh-llm-pi-ai`'s own `resolveModelReasoning`.
  *
- * Two sources, strictly ordered (`docs/reasoning-effort-probe-plan.md` §5):
+ * Two sources, strictly ordered:
  *
  * 1. **The declared set.** When the upstream declares a non-empty
  *    `supportedEfforts`, exactly those values are offered and nothing else.

@@ -1,8 +1,8 @@
 /**
  * Probe control route: the only state-changing endpoint the plugin exposes.
  *
- * Two guards, because they stop different things (see `docs/reasoning-effort-probe-plan.md`
- * §6.4 and the v0.3.1 note in AGENTS.md about their exact scope):
+ * Two guards, because they stop different things and neither substitutes for
+ * the other:
  *
  * 1. **Loopback Host + Origin**, shared with the status route. This drops
  *    DNS-rebinding pages, whose requests arrive addressed to the attacker's

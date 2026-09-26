@@ -5,124 +5,32 @@ import { IncomingMessage, ServerResponse } from "node:http";
 import { Context } from "@deepseek-ai/cordis";
 import { SettingsNamespace } from "@deepseek-ai/dsh-settings";
 import { AttachmentStore } from "@deepseek-ai/dsh-attachment";
-//#region src/status-paths.d.ts
-/** One QR sign-in challenge, as the browser renders it. */
-interface WorkBuddyQrChallenge$1 {
-  /** Opaque state the browser echoes back when polling. */
-  state: string;
-  /** The URL the QR code encodes. */
-  authUrl: string;
-  /** When the challenge stops being valid, epoch ms. */
-  expiresAtMs: number;
-}
-/** Action requested from the account route. */
-type WorkBuddyAccountAction = {
-  action: 'add';
-} |
-/**
- * Add an account from a sign-in token pasted out of the web console.
- *
- * The token travels in the request body and is never echoed back: it is
- * credential material, and the response describes the account, not the token.
- */
-{
-  action: 'add-cookie';
-  token: string;
-} | {
-  action: 'poll';
-  state: string;
-} | {
-  action: 'cancel';
-  state: string;
-} | {
-  action: 'remove';
-  id: string;
-} | {
-  action: 'enable';
-  id: string;
-  enabled: boolean;
-} | {
-  action: 'label';
-  id: string;
-  label?: string;
-} | {
-  action: 'reorder';
-  ids: readonly string[];
-} | {
-  action: 'test';
-  id: string;
-} | {
-  action: 'refresh-credits';
-} |
-/**
- * Choose which context length a model runs at.
- *
- * A write because it changes subsequent requests, not just the display: the
- * adapter reports the chosen window to pi-ai, which derives each request's
- * output ceiling from it.
- */
-{
-  action: 'context';
-  model: string;
-  length: number;
-};
-/** What an account action answers with. */
-interface WorkBuddyAccountResult {
-  /** `ok` for every action that completed; otherwise a short reason. */
-  state: 'ok' | 'failed' | 'waiting' | 'expired' | 'invalid' | 'added';
-  reason?: string;
-  /** Present for `add`: the challenge to render as a QR code. */
-  challenge?: WorkBuddyQrChallenge$1;
-  /** Present for `poll` and `add-cookie`: the added account's display name. */
-  name?: string;
-  created?: boolean;
-  /** Present for `test`: whether a minimal streaming request succeeded. */
-  test?: {
-    ok: boolean;
-    message: string;
-  };
-}
-/**
- * Why no credential is usable, as a closed enum the browser half switches on.
- *
- * Deliberately separate from `reason`: `reason` is free text meant for a human
- * to read, so matching on it would break the moment the wording changes. This
- * is the machine-readable half, and the card uses it — never a substring of
- * `reason` — to decide whether the Agent assist block applies.
- */
-type WorkBuddySignedOutReasonCode =
-/** Nobody is signed in; nothing diagnosable beyond that. */
-'no-credential' |
-/** A credential for the *other* product was found in this variant's file. */
-'credential-region-mismatch' |
-/** An encrypted credential exists but could not be opened (wrong key, GCM failure, helper crash). */
-'encrypted-credential-unreadable' |
-/** CN/macOS: discovery ran to completion and produced no usable candidate. */
-'electron-binary-not-found' |
-/** CN/macOS: discovery found more than one distinct usable app. */
-'electron-binary-ambiguous' |
-/** No auto-discovery for this product/platform and no explicit path configured. */
-'electron-binary-unavailable' |
-/** An explicit path (option or env) is set but missing or not executable. */
-'electron-path-invalid' |
-/** Discovery could not finish: tool missing, timeout, output overflow, unreadable plist. */
-'electron-discovery-incomplete';
-/**
- * The two ways the sidebar card may state a product's credit.
- *
- * Declared here rather than with the host's config schema because BOTH halves
- * need the closed set: the host validates what it writes, and the browser picks
- * a rendering from what it reads — with one shared definition, a third style
- * could not be added on one side alone.
- *
- * - `'remaining'`: one line per product, "WorkBuddy 剩余额度 5,266" — the figure
- *   most readers open the sidebar for, with no bar;
- * - `'usage'`: the reference provider card's shape, a "used / total" pair over a
- *   bar of that ratio, which states the cycle's capacity as well as the balance.
- */
-type WorkBuddySidebarCreditStyle = 'remaining' | 'usage';
-//#endregion
 //#region src/desktop-credential-protection.d.ts
+/**
+ * WorkBuddy 5.6.x at-rest credential protection: classification, key
+ * resolution, and field decryption for the desktop app's encrypted auth file.
+ *
+ * Since WorkBuddy 5.6 the desktop app encrypts `auth.accessToken` and
+ * `auth.refreshToken` at rest (`buildPolicy: "fields"`, on by default), so the
+ * plugin reads `{$wbEncrypted:1, envelope}` wrappers instead of token strings
+ * (issues #39/#40). Everything needed to open them lives on the same machine:
+ *
+ * - the sealed payload (`{version:1, atRestSecretKey}`) comes from the
+ *   WorkBuddy-modified Electron's private `workbuddyStorage` binding, reached
+ *   by running *its own* binary once with `ELECTRON_RUN_AS_NODE=1`;
+ * - `protectorKey = sha256(atRestSecretKey, utf8)` opens the envelopes with
+ *   AES-256-GCM; the AAD builder below is transcribed from the app's own
+ *   `buildAuthenticatedContextAad` (transcribed and then verified live
+ *   against the 5.6.2 bundle — see {@link workBuddyFieldAad}).
+ *
+ * The plugin process itself can never call `_linkedBinding` (it runs in DSH's
+ * Node, not the forked Electron), so the helper is spawned. The key is cached
+ * in memory only, single-flight, and re-resolved when an envelope names a
+ * different key id. Neither the payload, the key, nor any token is ever
+ * logged; error messages carry sizes, ids, and exit codes only.
+ *
+ * @module dsh-workbuddy-connect/desktop-credential-protection
+ */
 /** The four states a desktop auth document can be read as. */
 type DesktopAuthFormat = 'absent' | 'plaintext' | 'encrypted' | 'unrecognized';
 /** The spawned helper. Separated from the provider so tests can stand it in. */
@@ -997,11 +905,6 @@ interface WorkBuddyAuthStatus {
    * Present only on `signed-out`, and never a substitute for fixing the file.
    */
   reason?: string;
-  /**
-   * Machine-readable companion to {@link reason}, for callers that must branch
-   * on the cause. Never derived by matching `reason` text.
-   */
-  reasonCode?: WorkBuddySignedOutReasonCode;
 }
 /** Constructor options; only {@link refresh} is required. */
 interface WorkBuddyStoreOptions {
@@ -1151,6 +1054,140 @@ declare class WorkBuddyCredentialStore {
   /** Whether any desktop-file candidate exists as a regular file; diagnostics only. */
   desktopFilePresent(): Promise<boolean>;
 }
+//#endregion
+//#region src/status-paths.d.ts
+/** One QR sign-in challenge, as the browser renders it. */
+interface WorkBuddyQrChallenge$1 {
+  /** Opaque state the browser echoes back when polling. */
+  state: string;
+  /** The URL the QR code encodes. */
+  authUrl: string;
+  /** When the challenge stops being valid, epoch ms. */
+  expiresAtMs: number;
+}
+/** Action requested from the account route. */
+type WorkBuddyAccountAction = {
+  action: 'add';
+} |
+/**
+ * Add an account from a sign-in token pasted out of the web console.
+ *
+ * The token travels in the request body and is never echoed back: it is
+ * credential material, and the response describes the account, not the token.
+ */
+{
+  action: 'add-cookie';
+  token: string;
+} | {
+  action: 'poll';
+  state: string;
+} | {
+  action: 'cancel';
+  state: string;
+} | {
+  action: 'remove';
+  id: string;
+} | {
+  action: 'enable';
+  id: string;
+  enabled: boolean;
+} | {
+  action: 'label';
+  id: string;
+  label?: string;
+} | {
+  action: 'reorder';
+  ids: readonly string[];
+} | {
+  action: 'test';
+  id: string;
+} | {
+  action: 'refresh-credits';
+} |
+/**
+ * Choose which context length a model runs at.
+ *
+ * A write because it changes subsequent requests, not just the display: the
+ * adapter reports the chosen window to pi-ai, which derives each request's
+ * output ceiling from it.
+ */
+{
+  action: 'context';
+  model: string;
+  length: number;
+};
+/** What an account action answers with. */
+interface WorkBuddyAccountResult {
+  /** `ok` for every action that completed; otherwise a short reason. */
+  state: 'ok' | 'failed' | 'waiting' | 'expired' | 'invalid' | 'added';
+  reason?: string;
+  /** Present for `add`: the challenge to render as a QR code. */
+  challenge?: WorkBuddyQrChallenge$1;
+  /** Present for `poll` and `add-cookie`: the added account's display name. */
+  name?: string;
+  created?: boolean;
+  /** Present for `test`: whether a minimal streaming request succeeded. */
+  test?: {
+    ok: boolean;
+    message: string;
+  };
+}
+/**
+ * The two ways the sidebar card may state a product's credit.
+ *
+ * Declared here rather than with the host's config schema because BOTH halves
+ * need the closed set: the host validates what it writes, and the browser picks
+ * a rendering from what it reads — with one shared definition, a third style
+ * could not be added on one side alone.
+ *
+ * - `'remaining'`: one line per product, "WorkBuddy 剩余额度 5,266" — the figure
+ *   most readers open the sidebar for, with no bar;
+ * - `'usage'`: the reference provider card's shape, a "used / total" pair over a
+ *   bar of that ratio, which states the cycle's capacity as well as the balance.
+ */
+type WorkBuddySidebarCreditStyle = 'remaining' | 'usage';
+//#endregion
+//#region src/preferences.d.ts
+/**
+ * Every plugin-wide preference, by the name of its config field.
+ *
+ * Both products' surfaces draw these, and each is written once but read from
+ * whichever document carries it — see `client/status-document.ts`.
+ */
+declare const WORKBUDDY_PREFERENCES: {
+  /**
+   * How the sidebar card states each product's credit.
+   *
+   * `'remaining'` (default) is one line per product — "WorkBuddy 剩余额度 5,266";
+   * `'usage'` is the reference card's shape — a "used / total" pair over a bar of
+   * that ratio. Both describe the same pool; they differ in which figure leads,
+   * and that is a matter of taste rather than of correctness, which is why it is
+   * a setting instead of a decision this plugin makes for the user.
+   */
+  readonly sidebarCreditStyle: {
+    readonly field: z<"remaining" | "usage", "remaining" | "usage", "defined">;
+    readonly stated: (value: WorkBuddySidebarCreditStyle) => WorkBuddySidebarCreditStyle;
+  };
+  /**
+   * Whether the sidebar keeps its credit card at all.
+   *
+   * The one preference here that REMOVES a surface instead of reshaping it:
+   * `false` takes the card out of the sidebar's foot, which is where both the
+   * resident credit summary and the way into the dashboard live. The dashboard
+   * therefore stays reachable from the settings page while this is off — a
+   * switch that stranded a destination would be a trap rather than a setting.
+   */
+  readonly sidebarCreditVisible: {
+    readonly field: z<boolean, boolean, "defined">;
+    readonly stated: (value: boolean) => boolean;
+  };
+};
+/** Every preference's config-field name. */
+type WorkBuddyPreferenceKey = keyof typeof WORKBUDDY_PREFERENCES;
+/** The config value one preference stores. */
+type WorkBuddyPreferenceValue<K extends WorkBuddyPreferenceKey> = Parameters<(typeof WORKBUDDY_PREFERENCES)[K]['stated']>[0];
+/** The preference half of this plugin's config. */
+type WorkBuddyPreferenceConfig = { [K in WorkBuddyPreferenceKey]?: WorkBuddyPreferenceValue<K>; };
 //#endregion
 //#region src/catalog.d.ts
 /** One model entry the adapter exposes. */
@@ -2634,8 +2671,13 @@ declare const WORKBUDDY_AI_SETTINGS_NS: SettingsNamespace;
  * writes through the right one.
  */
 declare const PROFILE_ENTRY_ID = "llm-workbuddy";
-/** Plugin configuration. */
-interface Config {
+/**
+ * The config fields that are not display preferences.
+ *
+ * The preference half is derived from {@link WORKBUDDY_PREFERENCES}, so this
+ * plugin's config has exactly one place per field no matter which kind it is.
+ */
+interface WorkBuddyConfiguredFields {
   /** Explicit WorkBuddy (CN) desktop auth-file path, overriding env and platform defaults. */
   authFile?: string;
   /** Explicit WorkBuddy AI (international) desktop auth-file path, overriding env and platform defaults. */
@@ -2648,30 +2690,9 @@ interface Config {
   probeConsent?: boolean;
   /** Use the largest context window the international catalog explicitly offers. */
   useMaximumContextWindow?: boolean;
-  /**
-   * How the sidebar card states each product's credit.
-   *
-   * `'remaining'` (default) is one line per product — "WorkBuddy 剩余额度 5,266";
-   * `'usage'` is the reference card's shape — a "used / total" pair over a bar of
-   * that ratio. Both describe the same pool; they differ in which figure leads,
-   * and that is a matter of taste rather than of correctness, which is why it is
-   * a setting instead of a decision this plugin makes for the user.
-   */
-  sidebarCreditStyle?: WorkBuddySidebarCreditStyle;
-  /**
-   * Whether the sidebar keeps its credit card at all.
-   *
-   * The one preference here that REMOVES a surface instead of reshaping it:
-   * `false` takes the card out of the sidebar's foot, which is where both the
-   * resident credit summary and the way into the dashboard live. The dashboard
-   * therefore stays reachable from the settings page while this is off — a
-   * switch that stranded a destination would be a trap rather than a setting.
-   *
-   * Defaults to on ({@link WORKBUDDY_SIDEBAR_CREDIT_VISIBLE_DEFAULT}), so a
-   * config written before this field existed keeps drawing the card.
-   */
-  sidebarCreditVisible?: boolean;
 }
+/** Plugin configuration. */
+type Config = WorkBuddyPreferenceConfig & WorkBuddyConfiguredFields;
 /**
  * The composition schema: what the loader reads and what 0.1.7's settings forms
  * project.

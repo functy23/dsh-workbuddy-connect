@@ -42,6 +42,8 @@ import { openWorkBuddyLink } from './open-link.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import { isWorkBuddySidebarCreditStyle, WORKBUDDY_PROFILE_ENTRY_ID } from './status-paths.ts'
 import type { WorkBuddySidebarCreditStyle, WorkBuddyWebCatalog, WorkBuddyWebProbeSection } from './status-paths.ts'
+import { WORKBUDDY_PREFERENCES, statedPreferences } from './preferences.ts'
+import type { WorkBuddyPreferenceConfig } from './preferences.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { CN_VARIANT, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
@@ -287,8 +289,13 @@ function credentialPollMs(): number {
  */
 const CATALOG_RETRY_SWEEPS = 10
 
-/** Plugin configuration. */
-export interface Config {
+/**
+ * The config fields that are not display preferences.
+ *
+ * The preference half is derived from {@link WORKBUDDY_PREFERENCES}, so this
+ * plugin's config has exactly one place per field no matter which kind it is.
+ */
+interface WorkBuddyConfiguredFields {
   /** Explicit WorkBuddy (CN) desktop auth-file path, overriding env and platform defaults. */
   authFile?: string
   /** Explicit WorkBuddy AI (international) desktop auth-file path, overriding env and platform defaults. */
@@ -301,30 +308,10 @@ export interface Config {
   probeConsent?: boolean
   /** Use the largest context window the international catalog explicitly offers. */
   useMaximumContextWindow?: boolean
-  /**
-   * How the sidebar card states each product's credit.
-   *
-   * `'remaining'` (default) is one line per product — "WorkBuddy 剩余额度 5,266";
-   * `'usage'` is the reference card's shape — a "used / total" pair over a bar of
-   * that ratio. Both describe the same pool; they differ in which figure leads,
-   * and that is a matter of taste rather than of correctness, which is why it is
-   * a setting instead of a decision this plugin makes for the user.
-   */
-  sidebarCreditStyle?: WorkBuddySidebarCreditStyle
-  /**
-   * Whether the sidebar keeps its credit card at all.
-   *
-   * The one preference here that REMOVES a surface instead of reshaping it:
-   * `false` takes the card out of the sidebar's foot, which is where both the
-   * resident credit summary and the way into the dashboard live. The dashboard
-   * therefore stays reachable from the settings page while this is off — a
-   * switch that stranded a destination would be a trap rather than a setting.
-   *
-   * Defaults to on ({@link WORKBUDDY_SIDEBAR_CREDIT_VISIBLE_DEFAULT}), so a
-   * config written before this field existed keeps drawing the card.
-   */
-  sidebarCreditVisible?: boolean
 }
+
+/** Plugin configuration. */
+export type Config = WorkBuddyPreferenceConfig & WorkBuddyConfiguredFields
 
 /** Explicit CN desktop auth-file path (shared by the plugin schema and its section). */
 const AUTH_FILE_FIELD = z.string().description('WorkBuddy desktop auth file (defaults to the app\'s own location)')
@@ -335,12 +322,16 @@ const PROBE_CONSENT_FIELD = z.boolean().default(false)
   .description('Authorize reasoning-effort probes (each probe sends real requests that may consume credit)')
 const MAXIMUM_CONTEXT_WINDOW_FIELD = z.boolean().default(true)
   .description('Use the largest context window declared by WorkBuddy AI when alternatives are available (on by default)')
-/** Sidebar credit line style (shared by both variants' cards, which show the same figure). */
-const SIDEBAR_CREDIT_STYLE_FIELD = z.union(['remaining', 'usage']).default('remaining')
-  .description('Sidebar credit line: "remaining" states the balance per product; "usage" shows used / total over a bar')
-/** Whether the sidebar keeps its credit card (shared by both variants, which write one sidebar). */
-const SIDEBAR_CREDIT_VISIBLE_FIELD = z.boolean().default(true)
-  .description('Show the WorkBuddy credit card at the bottom of the sidebar (off: the dashboard stays reachable from this settings page)')
+/**
+ * The preference fields, taken from the one table that declares them.
+ *
+ * Shared by both variants' cards, which draw the same values: a preference that
+ * lives in one status document per product is still one plugin-wide setting, and
+ * the table is what keeps the two products agreeing about its default.
+ */
+const PREFERENCE_FIELDS = Object.fromEntries(
+  Object.entries(WORKBUDDY_PREFERENCES).map(([key, preference]) => [key, preference.field]),
+)
 
 /**
  * The plugin's own config fields, built once so the two generations can share
@@ -359,8 +350,7 @@ const CONFIG_FIELDS = {
   authFileAI: AUTH_FILE_AI_FIELD,
   probeConsent: PROBE_CONSENT_FIELD,
   useMaximumContextWindow: MAXIMUM_CONTEXT_WINDOW_FIELD,
-  sidebarCreditStyle: SIDEBAR_CREDIT_STYLE_FIELD,
-  sidebarCreditVisible: SIDEBAR_CREDIT_VISIBLE_FIELD,
+  ...PREFERENCE_FIELDS,
 } as const
 
 /**
@@ -447,7 +437,8 @@ interface VariantRuntime {
    * switch, a sign-out, or a new fetch superseding an older one. A request
    * carries the generation it started under and refuses to write back if the
    * generation has moved on, so a slow answer can never resurrect data the
-   * plugin has since decided to drop (spec §5: late responses are discarded).
+   * plugin has since decided to drop: a late response is discarded, never
+   * merged.
    */
   catalogGeneration: number
   /**
@@ -1056,18 +1047,11 @@ export function apply(ctx: Context, config: Config): void {
         resolveContextWindow: (modelId, declared) => runtime.contextPreference.resolve(modelId, declared),
         catalog: () => catalogSection(runtime),
         probe: () => probeSection(runtime, current().probeConsent === true),
-        // The card's display preference rides the status document so the sidebar
-        // knows how to draw itself before anything else on the page can tell it
-        // what the setting says.
-        sidebarCreditStyle: () => current().sidebarCreditStyle === 'usage' ? 'usage' : 'remaining',
-        // The card may be switched off entirely. Read straight off the live
-        // config, so the next status read after the write already reflects it and
-        // the sidebar can be told to drop the card without a reload. `!== false`
-        // rather than a truthiness test: an untouched config field resolves to
-        // the schema default, and a hand-edited `settings.yaml` missing the key
-        // must still mean "present" — the opposite reading would empty the
-        // sidebar of anyone whose file predates the field.
-        sidebarCreditVisible: () => current().sidebarCreditVisible !== false,
+        // Every display preference rides the status document, projected from the
+        // live config, so the sidebar knows how to draw itself before anything
+        // else on the page can tell it what the settings say — and so the very
+        // next read after a write already reflects it, without a reload.
+        preferences: () => statedPreferences(current()),
         emptyReason: () => desktopReadError.get(runtime.variant.id),
         store: runtime.store,
         probeKey,
@@ -1509,8 +1493,8 @@ export function apply(ctx: Context, config: Config): void {
    * so that concurrent callers cost one request and cannot interleave badly:
    *
    * - **One request at a time.** A second caller joins the in-flight fetch
-   *   instead of starting its own (spec §5: one catalog request per variant at
-   *   a time).
+   *   instead of starting its own, so one variant never has two catalog
+   *   requests open at once.
    * - **Generation-checked write-back.** The request records the generation it
    *   started under and writes nothing if the generation moved on — which is
    *   what a slow answer from a superseded account must not do. Checking only

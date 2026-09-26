@@ -12,8 +12,8 @@
  *   by running *its own* binary once with `ELECTRON_RUN_AS_NODE=1`;
  * - `protectorKey = sha256(atRestSecretKey, utf8)` opens the envelopes with
  *   AES-256-GCM; the AAD builder below is transcribed from the app's own
- *   `buildAuthenticatedContextAad` (verified live against 5.6.2, see
- *   `docs/r3-final.js` in the working copy — not committed).
+ *   `buildAuthenticatedContextAad` (transcribed and then verified live
+ *   against the 5.6.2 bundle — see {@link workBuddyFieldAad}).
  *
  * The plugin process itself can never call `_linkedBinding` (it runs in DSH's
  * Node, not the forked Electron), so the helper is spawned. The key is cached
@@ -184,8 +184,9 @@ export function unwrapDesktopAuthDocument(
 
 /**
  * The authenticated-context AAD for one field envelope, transcribed from the
- * app bundle's `buildAuthenticatedContextAad` and verified live against 5.6.2
- * (`docs/r3-final.js` in the working copy holds the original reference).
+ * app bundle's `buildAuthenticatedContextAad` and verified live against the
+ * 5.6.2 bundle: the field framing prefix, the field name, and the document's
+ * own id, in that order.
  * Credential fields are always suite 1 under the `field` framing (WBEV1);
  * the framing family's other members (WBEF1/WBER1/WBES1) belong to other
  * document kinds and are deliberately not implemented — opening a field is

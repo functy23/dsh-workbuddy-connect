@@ -1,5 +1,10 @@
 /** Node-free constants and types shared by the Host and browser halves. */
 
+// Type-only, and therefore erased: this module is what the browser bundle
+// imports for the wire contract, and the preference table beside it carries the
+// host's schema. Nothing here may pull that schema into the client.
+import type { WorkBuddyStatedPreferences } from './preferences.ts'
+
 /**
  * How long a benched account stays benched, in the unit that reads best.
  *
@@ -485,6 +490,22 @@ export function isWorkBuddySidebarCreditStyle(value: unknown): value is WorkBudd
 }
 
 /**
+ * The display preferences every status document may state.
+ *
+ * Deliberately derived from {@link WORKBUDDY_PREFERENCES} rather than written
+ * out here: the host projects that same table onto the wire, so a field declared
+ * only in this file would be a field nothing ever produces. The keys stay
+ * TOP-LEVEL on the document rather than nesting under a `preferences` object,
+ * because a browser half reading a document from a host that predates the
+ * nesting must still find them — the field names are the compatibility contract,
+ * not the shape they are grouped in.
+ *
+ * Read them through `client/status-document.ts`, which is what knows that a
+ * document failing to load must not answer for the pair.
+ */
+export type WorkBuddyWebPreferences = WorkBuddyStatedPreferences
+
+/**
  * Whether the sidebar keeps its credit card at all, when nothing says otherwise.
  *
  * One shared constant rather than a literal on each side, because BOTH halves
@@ -509,24 +530,6 @@ export type WorkBuddyWebStatus =
      */
     reason?: string
     /**
-     * How the sidebar should state each product's credit.
-     *
-     * Carried in BOTH sign-in states: the card draws its credit lines the same
-     * way whether the pool is empty or not, so a setting that only arrived once
-     * an account existed would re-shape the card on the user's first sign-in.
-     */
-    sidebarCreditStyle?: WorkBuddySidebarCreditStyle
-    /**
-     * Whether the sidebar keeps its credit card at the bottom of the column.
-     *
-     * Carried in BOTH sign-in states for the same reason the style is: the card
-     * is the user's always-on summary, and one that reappeared the moment an
-     * account was added would make the switch look like it had not been saved.
-     * Absent when the host cannot persist the preference — read as
-     * {@link WORKBUDDY_SIDEBAR_CREDIT_VISIBLE_DEFAULT}, never as "off".
-     */
-    sidebarCreditVisible?: boolean
-    /**
      * The account pool, which may be empty.
      *
      * Present in this state so the card's account tab still works: adding the
@@ -536,7 +539,7 @@ export type WorkBuddyWebStatus =
     accounts?: WorkBuddyWebAccounts
     /** In-process key authorizing probe and account writes. */
     probeKey?: string
-  }
+  } & WorkBuddyWebPreferences
   | {
     status: 'signed-in'
     nickname?: string
@@ -559,27 +562,6 @@ export type WorkBuddyWebStatus =
     /** Per-account hidden-model state for the card's visibility controls. */
     visibility?: WorkBuddyWebVisibilitySection
     /**
-     * How the sidebar should state each product's credit.
-     *
-     * Carried on the document because the sidebar draws itself from the same read
-     * the dashboard does, and it must state the credit the way the user chose
-     * before any other surface has had a chance to run. Absent when the host
-     * cannot persist the preference: the card then keeps its default shape.
-     */
-    sidebarCreditStyle?: WorkBuddySidebarCreditStyle
-    /**
-     * Whether the sidebar keeps its credit card at the bottom of the column.
-     *
-     * The ONE preference that can remove a surface rather than reshape it, which
-     * is why it is stated on the document and not kept in browser state: the
-     * sidebar card, the dashboard it opens and the settings row that writes it
-     * are three mounts, and a preference that only one of them knew would leave
-     * the card drawn against the user's choice until the next reload. Absent when
-     * the host cannot persist the preference — read as
-     * {@link WORKBUDDY_SIDEBAR_CREDIT_VISIBLE_DEFAULT}, never as "off".
-     */
-    sidebarCreditVisible?: boolean
-    /**
      * A diagnosable problem reading the desktop app's own credential, while the
      * pool still serves from its other members.
      *
@@ -596,5 +578,5 @@ export type WorkBuddyWebStatus =
      * loopback guard); it is never persisted and rotates per process.
      */
     probeKey?: string
-  }
+  } & WorkBuddyWebPreferences
   | { status: 'error'; message: string }

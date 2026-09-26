@@ -21,7 +21,8 @@ import { normalizeCredits } from './upstream.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
-import type { WorkBuddySidebarCreditStyle, WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from './status-paths.ts'
+import type { WorkBuddyWebCatalog, WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus, WorkBuddyWebVisibilitySection } from './status-paths.ts'
+import type { WorkBuddyStatedPreferences } from './preferences.ts'
 
 export { WORKBUDDY_STATUS_PATH } from './status-paths.ts'
 export type { WorkBuddyWebStatus } from './status-paths.ts'
@@ -53,25 +54,16 @@ export interface WorkBuddyStatusRouteOptions {
   /** In-process key authorizing probe control writes. */
   probeKey?: string
   /**
-   * How the sidebar card states each product's credit.
+   * The display preferences this document states.
    *
-   * Read per document rather than captured: the setting is written through the
-   * host's settings service, and the very next read must reflect it without a
-   * restart. Absent when the host cannot persist the preference, which is the
-   * card's signal to keep its default shape.
+   * Projected per document rather than captured at registration: every one of
+   * them is written through the host's settings service, so the very next read
+   * has to reflect a write without a restart. A route assembled without the
+   * projector (tests, a headless profile) leaves the fields out, and the
+   * browser half then keeps its defaults rather than drawing a surface from a
+   * document that never knew the setting.
    */
-  sidebarCreditStyle?: () => WorkBuddySidebarCreditStyle | undefined
-  /**
-   * Whether the sidebar keeps its credit card at all.
-   *
-   * Read per document, exactly like the style beside it, and for the same
-   * reason: it is written through the host's settings service, so the very next
-   * read has to reflect it. A route assembled without the getter (tests, a
-   * headless profile) leaves the field out, and the card then keeps its default
-   * — present — rather than vanishing from a document that never knew the
-   * setting.
-   */
-  sidebarCreditVisible?: () => boolean | undefined
+  preferences?: () => WorkBuddyStatedPreferences
   /**
    * Why the pool is empty, when the reason is diagnosable.
    *
@@ -322,15 +314,11 @@ function accountSections(
 ): {
   accounts: NonNullable<Extract<WorkBuddyWebStatus, { status: 'signed-in' }>['accounts']>
   probeKey?: string
-  sidebarCreditStyle?: 'remaining' | 'usage'
-  sidebarCreditVisible?: boolean
-} {
+} & WorkBuddyStatedPreferences {
   // The display preferences ride this helper because they are shared by both
   // sign-in states for the same reason the control key is: the sidebar draws its
   // credit line the same way whether the pool is empty or not, and whether it is
   // drawn at all is equally independent of what the pool holds.
-  const creditStyle = deps.sidebarCreditStyle?.()
-  const creditVisible = deps.sidebarCreditVisible?.()
   return {
     accounts: {
       accounts: snapshot.accounts,
@@ -338,8 +326,7 @@ function accountSections(
       ...snapshot.desktop === undefined ? {} : { desktop: snapshot.desktop },
     },
     ...deps.probeKey === undefined ? {} : { probeKey: deps.probeKey },
-    ...creditStyle === undefined ? {} : { sidebarCreditStyle: creditStyle },
-    ...creditVisible === undefined ? {} : { sidebarCreditVisible: creditVisible },
+    ...deps.preferences?.(),
   }
 }
 

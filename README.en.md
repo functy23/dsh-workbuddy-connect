@@ -62,7 +62,7 @@ Both the CN **WorkBuddy** and the international **WorkBuddy AI** apps are suppor
 
 ## UI structure
 
-Four surfaces, one navigation story. Every one of them registers through a DSH slot — the plugin mounts nothing of its own:
+Four surfaces, one navigation story. Every one of them registers through a DSH slot — the plugin mounts nothing of its own. Two further small controls sit beside the composer (the credit badge and the reasoning-level button), for six slots in all:
 
 | Surface | Purpose | What it shows |
 |---|---|---|
@@ -156,7 +156,7 @@ Switching the sidebar card off **does not affect this badge** (or the dashboard)
 
 All four surfaces share one implementation:
 
-- **Styles are classes, not inline objects.** Every rule lives in the two stylesheets `src/client/ui-styles.ts` returns (`wbp-` prefixed) and every colour is a `--dsw-alias-*` theme token. An inline object can carry a token but not a `:hover`, a `:focus-visible`, an `::after`, or a media query — so each interactive affordance used to be reimplemented in JavaScript, and each colour was a literal that got dark mode wrong.
+- **Styles are classes, not inline objects.** Every rule these four surfaces draw lives in the two stylesheets `src/client/ui-styles.ts` returns (`wbp-` prefixed) and every colour is a `--dsw-alias-*` theme token. The one exception is the pair of single-line composer controls: they have no interactive state, so the cross-file indirection would cost more than it buys, and they use tokenised inline styles instead (about twenty of them, colours still taken from `--dsw-alias-*`). An inline object can carry a token but not a `:hover`, a `:focus-visible`, an `::after`, or a media query — so each interactive affordance used to be reimplemented in JavaScript, and each colour was a literal that got dark mode wrong.
 - **The settings page is a column of rows, not a stack of cards.** A 720px content column, groups of hairline-separated rows under a heading (title and description left, control right), the same shape as the harness's own General and Models pages. Account rows fold: the head line is always visible, and opening it reveals the balance, the state and the actions.
 - **Buttons, switches and tags are the platform's own** (`@deepseek-ai/dsh-client-ui-primitives`, a seed module the browser shell provides), so a row's controls are literally the controls the harness's settings pages draw.
 - **The Models-page card is self-contained.** It shows the summary and offers a Refresh; it does not navigate, because the settings shell exposes no navigation seam to a plugin and inventing a URL would be a button that looks live and does nothing. Managing accounts stays on the management page.

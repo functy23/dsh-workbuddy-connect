@@ -8,10 +8,9 @@ import { WorkBuddyProbeService } from '../src/probe-service.ts'
 import type { WorkBuddyModelInfo } from '../src/catalog.ts'
 
 /**
- * Offline tests for the probe record and its precedence rules
- * (`docs/reasoning-effort-probe-plan.md` §5): an observation is invalidated by
- * a catalog change, expires, never overrides a declared set, and is never
- * erased by a transient failure.
+ * Offline tests for the probe record and its precedence rules: an observation
+ * is invalidated by a catalog change, expires, never overrides a declared set,
+ * and is never erased by a transient failure.
  */
 
 const CLEANUP: string[] = []

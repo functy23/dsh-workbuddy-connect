@@ -12,8 +12,9 @@
  *   node scripts/client-identity-live-matrix.mjs intl-probe # one case
  *
  * Cases: cn-chat, cn-tool, intl-chat, intl-tool, cn-probe, intl-probe,
- * baseline-cn, baseline-intl. Results and the 2026-09-14 run are recorded
- * in docs/client-identity-live-verification-2026-09-14.md (local file).
+ * baseline-cn, baseline-intl. Each case prints the identity and the shape of
+ * the answer; the script records nothing itself, so a run's result is only
+ * kept if the operator copies it out.
  */
 
 import { readFile } from 'node:fs/promises'

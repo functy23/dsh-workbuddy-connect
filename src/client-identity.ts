@@ -1,6 +1,5 @@
 /**
- * The desktop-client identity chat requests present as (phase 1 of
- * `docs/upstream-identity-alignment-plan.md`).
+ * The desktop-client identity chat requests present as.
  *
  * Chat and its probe sibling carry the User-Agent shape the official desktop
  * client composes — `WorkBuddy/<v> <product>/<v> CLI/<cli>` — where the

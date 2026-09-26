@@ -21,10 +21,9 @@ import { WorkBuddyCredentialStore } from '../src/auth.ts'
  * Issue #39/#40: WorkBuddy 5.6 seals the desktop auth file's token fields in
  * at-rest envelopes. Every fixture here is synthetic — a fixed test secret, a
  * test-derived protector key, fake tokens — so nothing real is ever committed
- * or printed. The AAD builder is additionally pinned against a verbatim
- * transcription of `docs/r3-final.js` (the reference verified live against
- * 5.6.2), because a silent AAD change is undetectable except by decryption
- * failures in the field.
+ * or printed. The AAD builder is additionally pinned against the bytes the
+ * 5.6.2 bundle itself produces, because a silent AAD change is undetectable
+ * except by decryption failures in the field.
  */
 
 const SECRET = Buffer.alloc(32, 7).toString('base64')

@@ -310,8 +310,7 @@ describe('sidebar credit card capability', () => {
    */
   it('carries both display preferences, including an off card', async () => {
     const port = await startStatusServer({
-      sidebarCreditStyle: () => 'usage',
-      sidebarCreditVisible: () => false,
+      preferences: () => ({ sidebarCreditStyle: 'usage', sidebarCreditVisible: false }),
     })
     const response = await requestOnce({ port, method: 'GET', headers: { host: '127.0.0.1' } })
     const document = JSON.parse(response.body) as Record<string, unknown>
@@ -319,10 +318,9 @@ describe('sidebar credit card capability', () => {
     expect(document['sidebarCreditVisible']).toBe(false)
   })
 
-  it('omits the field when the getter answers undefined, leaving the card to its default', async () => {
+  it('omits a preference the projector leaves out, leaving it to its default', async () => {
     const port = await startStatusServer({
-      sidebarCreditStyle: () => 'remaining',
-      sidebarCreditVisible: () => undefined,
+      preferences: () => ({ sidebarCreditStyle: 'remaining' }),
     })
     const response = await requestOnce({ port, method: 'GET', headers: { host: '127.0.0.1' } })
     const document = JSON.parse(response.body) as Record<string, unknown>
