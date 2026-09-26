@@ -8,8 +8,7 @@ import { createWorkBuddyAdapter, WORKBUDDY_PROVIDER } from '../src/adapter.ts'
 import { WorkBuddyCatalog, type WorkBuddyModelInfo } from '../src/catalog.ts'
 import { visibilityAccountOf } from '../src/index.ts'
 import { workBuddyWebStatus, type WorkBuddyStatusRouteOptions } from '../src/web-status.ts'
-import type { WorkBuddyCredentialStore } from '../src/auth.ts'
-import type { WorkBuddyShim } from '../src/shim.ts'
+import { credentialStoreDouble, shimDouble } from './doubles.ts'
 import { createProbeKey, workBuddyProbeHandler, type WorkBuddyProbeRouteOptions } from '../src/probe-route.ts'
 import type { WorkBuddyVariant } from '../src/variants.ts'
 import { WORKBUDDY_VARIANTS } from '../src/variants.ts'
@@ -45,13 +44,8 @@ const MODELS: readonly WorkBuddyModelInfo[] = [
   { id: 'auto', name: 'Auto', contextWindow: 1_000, maxTokens: 32_000, supportsImages: true, billing: { free: false } },
 ]
 
-/** The fake shim from `adapter.spec.ts`: never listens, only answers strings. */
-const SHIM = {
-  ready: Promise.resolve(),
-  baseUrl: () => 'http://127.0.0.1:1',
-  token: () => 'test-token',
-  close: async () => {},
-} as unknown as WorkBuddyShim
+/** A shim handle that never listens on a socket; see `tests/doubles.ts`. */
+const SHIM = shimDouble()
 
 describe('A. disabled-list semantics (visibility store)', () => {
   it('hides nothing for an account that never toggled anything', () => {
@@ -65,7 +59,7 @@ describe('A. disabled-list semantics (visibility store)', () => {
     let hidden: readonly string[] = []
     const { adapter } = createWorkBuddyAdapter({
       catalog,
-      store: {} as WorkBuddyCredentialStore,
+      store: credentialStoreDouble(),
       shim: SHIM,
       hidden: () => hidden,
     })
@@ -131,7 +125,7 @@ describe('B. resolve compatibility (hidden but resolvable)', () => {
     const catalog = new WorkBuddyCatalog([...MODELS])
     const { adapter } = createWorkBuddyAdapter({
       catalog,
-      store: {} as WorkBuddyCredentialStore,
+      store: credentialStoreDouble(),
       shim: SHIM,
       hidden: () => ['glm-5.3'],
     })
@@ -149,7 +143,7 @@ describe('B. resolve compatibility (hidden but resolvable)', () => {
     store.setVisible('uid-b:', 'auto', false)
     const { adapter } = createWorkBuddyAdapter({
       catalog,
-      store: {} as WorkBuddyCredentialStore,
+      store: credentialStoreDouble(),
       shim: SHIM,
       hidden: () => (account === undefined ? [] : store.disabled(account)),
     })
@@ -262,7 +256,7 @@ describe('F. signed-out and uid-less degradation', () => {
     // document signed-out — and a signed-out document never carries a
     // visibility section, whatever the getter would have answered.
     const deps: WorkBuddyStatusRouteOptions = {
-      store: { status: async () => ({ state: 'signed-out' }) } as unknown as WorkBuddyCredentialStore,
+      store: credentialStoreDouble(),
       accounts: { hasAccounts: () => false, snapshot: async () => ({ accounts: [] }), primaryCredential: async () => undefined },
       client: { fetchCredits: async () => ({ total: 0, accounts: [] }) },
       models: () => [],
@@ -275,10 +269,10 @@ describe('F. signed-out and uid-less degradation', () => {
 
   it('a signed-in account-without-uid omits the section rather than sharing a bucket', async () => {
     const deps: WorkBuddyStatusRouteOptions = {
-      store: {
+      store: credentialStoreDouble({
         status: async () => ({ state: 'signed-in', nickname: 'n' }),
         current: async () => undefined,
-      } as unknown as WorkBuddyCredentialStore,
+      }),
       accounts: {
         hasAccounts: () => true,
         // One account in the pool is what "signed in" now means.
@@ -297,10 +291,10 @@ describe('F. signed-out and uid-less degradation', () => {
 
   it('a signed-in account-with-uid carries its full hidden list, stale ids included', async () => {
     const deps: WorkBuddyStatusRouteOptions = {
-      store: {
+      store: credentialStoreDouble({
         status: async () => ({ state: 'signed-in', nickname: 'n' }),
         current: async () => undefined,
-      } as unknown as WorkBuddyCredentialStore,
+      }),
       accounts: {
         hasAccounts: () => true,
         snapshot: async () => ({ accounts: [ACCOUNT] }),

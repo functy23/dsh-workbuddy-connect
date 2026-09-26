@@ -5,8 +5,25 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { WorkBuddyCatalog } from '../src/catalog.ts'
 import { WorkBuddyProbeStore } from '../src/probe-store.ts'
 import { WorkBuddyProbeService } from '../src/probe-service.ts'
-import type { WorkBuddyCredentialStore } from '../src/auth.ts'
+import type { WorkBuddyCredential } from '../src/auth.ts'
 import type { WorkBuddyUpstreamClient } from '../src/upstream.ts'
+import { credentialStoreDouble } from './doubles.ts'
+
+/**
+ * A credential good enough to pass the service's presence check.
+ *
+ * The probe path asks only whether one exists — it never sends it, because the
+ * sender resolves its own — so this states the shape rather than pretending to
+ * be a live sign-in.
+ */
+const CREDENTIAL: WorkBuddyCredential = {
+  accessToken: 'at-probe-test',
+  refreshToken: 'rt-probe-test',
+  expiresAtMs: Date.now() + 3_600_000,
+  domain: 'copilot.tencent.com',
+  uid: 'uid-1',
+  source: 'dsh',
+}
 
 describe('manual probe consent and deduplication', () => {
   const paths: string[] = []
@@ -19,7 +36,7 @@ describe('manual probe consent and deduplication', () => {
     const service = new WorkBuddyProbeService({
       catalog,
       store: new WorkBuddyProbeStore({ path: join(path, 'state.json'), pluginVersion: 'test' }),
-      credentials: { current: async () => ({}) } as unknown as WorkBuddyCredentialStore,
+      credentials: credentialStoreDouble({ current: async () => CREDENTIAL }),
       client: {} as WorkBuddyUpstreamClient,
       consent: () => consent,
       account: () => 'uid-1:ent-1',
@@ -56,7 +73,7 @@ describe('manual probe consent and deduplication', () => {
     const service = new WorkBuddyProbeService({
       catalog,
       store: new WorkBuddyProbeStore({ path: join(path, 'state.json'), pluginVersion: 'test' }),
-      credentials: { current: async () => ({}) } as unknown as WorkBuddyCredentialStore,
+      credentials: credentialStoreDouble({ current: async () => CREDENTIAL }),
       client: {} as WorkBuddyUpstreamClient,
       consent: () => false,
       account: () => account,
