@@ -513,6 +513,12 @@ describe('WorkBuddyProbeControl', () => {
   const directory = {
     getSnapshot: () => state,
     subscribe: (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener) },
+    // The store's write half. The control only ever reads, but the double
+    // IMPLEMENTS it instead of asserting past it: the cast that used to stand
+    // here is what let a guard against the wrong falsy value survive its own
+    // typecheck (see the null-selection case below).
+    update: (mutator: (snapshot: typeof state) => void) => { mutator(state); listeners.forEach(listener => listener()) },
+    set: (next: typeof state) => { state = next; listeners.forEach(listener => listener()) },
   } as WorkBuddyProbeControlProps['directory']
 
   beforeEach(() => {

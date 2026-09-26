@@ -107,7 +107,7 @@ describe('WorkBuddy settings page', () => {
   /** How many times the page asked the sidebar card to re-read. */
   let panelRefreshes = 0
 
-  async function mount(): Promise<void> {
+  async function mount(options: { openPanel?: () => void } = {}): Promise<void> {
     panelRefreshes = 0
     container = document.createElement('div')
     document.body.appendChild(container)
@@ -118,6 +118,8 @@ describe('WorkBuddy settings page', () => {
         // The sidebar card polls on its own minute, so a write that changes how
         // it is drawn has to nudge it — asserted here rather than assumed.
         refreshPanel: () => { panelRefreshes += 1 },
+        // The way into the dashboard while the sidebar card is switched off.
+        ...options.openPanel === undefined ? {} : { openPanel: options.openPanel },
       }))
       await Promise.resolve()
       await Promise.resolve()
@@ -214,8 +216,8 @@ describe('WorkBuddy settings page', () => {
   it('lists each product under its own heading with its own accounts', async () => {
     await mount()
     const rendered = text()
-    expect(rendered).toContain(t(CN_CARD_VARIANT.titleKey))
-    expect(rendered).toContain(t(AI_CARD_VARIANT.titleKey))
+    expect(rendered).toContain(CN_CARD_VARIANT.appName)
+    expect(rendered).toContain(AI_CARD_VARIANT.appName)
     expect(rendered).toContain('主账号')
     expect(rendered).toContain('国际账号')
   })
@@ -354,6 +356,78 @@ describe('WorkBuddy settings page', () => {
     // No sidebarCreditStyle in the document: an older host. A control whose
     // write could not be stored is worse than no control.
     expect(text()).not.toContain(t('sidebarStyleHeading'))
+    // The same for the switch beside it: a host that cannot state the field
+    // renders neither control, rather than a switch that could not be saved.
+    expect(document.querySelector('#wbp-sidebar-visible')).toBeNull()
+  })
+
+  /**
+   * The switch that takes the sidebar card away.
+   *
+   * Three facts have to hold at once — the switch mirrors the document, the
+   * write is immediate, and turning it off leaves the dashboard reachable — so
+   * they are asserted together. Individually they would each pass while the
+   * combination stranded the user with no way into the panel the card opens.
+   */
+  it('turns the sidebar card off, yields its style row, and keeps the dashboard reachable', async () => {
+    const off = (visible: boolean): WorkBuddyWebStatus => ({
+      ...withModels([model('m1')], { account: 'uid-a:ent', disabled: [] }),
+      sidebarCreditStyle: 'remaining',
+      sidebarCreditVisible: visible,
+    }) as unknown as WorkBuddyWebStatus
+    byRoute[CN_CARD_VARIANT.statusPath] = off(true)
+    byRoute[AI_CARD_VARIANT.statusPath] = signedIn([])
+    // A host that reflects its own writes: the page re-reads after one, so a
+    // mock still answering the pre-write document would leave the switch
+    // showing the state it just left.
+    const reflected = request.getMockImplementation()!
+    request.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') return { ok: true, json: async () => ({ state: 'updated' }) }
+      return reflected(url, init)
+    })
+    let opened = 0
+    await mount({ openPanel: () => { opened += 1 } })
+
+    // On: the switch mirrors the document, and the dashboard row is NOT drawn —
+    // the sidebar card is that destination, and this page does not duplicate a
+    // door that is already open.
+    const toggle = document.querySelector('#wbp-sidebar-visible') as HTMLInputElement | null
+    expect(toggle?.checked).toBe(true)
+    expect(text()).toContain(t('sidebarStyleRemaining'))
+    expect(text()).not.toContain(t('sidebarDashboardOpen'))
+
+    byRoute[CN_CARD_VARIANT.statusPath] = off(false)
+    await act(async () => { toggle?.click(); await Promise.resolve(); await Promise.resolve() })
+
+    const call = posted().find(entry => entry.body['action'] === 'set-sidebar-credit-visible')
+    expect(call?.url).toBe(CN_CARD_VARIANT.probePath)
+    // The off value has to travel as `false`, not as an omitted field: the route
+    // refuses a payload that does not carry it.
+    expect(call?.body['enabled']).toBe(false)
+    // The sidebar outside this page is told to redraw now, not at its next tick.
+    expect(panelRefreshes).toBeGreaterThan(0)
+
+    // Off: the style row described a card that is no longer drawn, so it goes;
+    // the way into the dashboard takes its place.
+    expect(text()).not.toContain(t('sidebarStyleRemaining'))
+    const open = buttons().find(button => button.label === t('sidebarDashboardOpen'))
+    expect(open).toBeDefined()
+    await act(async () => { open?.node.click(); await Promise.resolve() })
+    expect(opened).toBe(1)
+  })
+
+  it('offers the switch alone when the page cannot reach the dashboard', async () => {
+    byRoute[CN_CARD_VARIANT.statusPath] = {
+      ...withModels([model('m1')], { account: 'uid-a:ent', disabled: [] }),
+      sidebarCreditVisible: false,
+    } as unknown as WorkBuddyWebStatus
+    byRoute[AI_CARD_VARIANT.statusPath] = signedIn([])
+    // No `openPanel`: a profile whose client entry has no layout seam. The
+    // switch still works — it is the row that cannot be offered, not the write.
+    await mount()
+    const toggle = document.querySelector('#wbp-sidebar-visible') as HTMLInputElement | null
+    expect(toggle?.checked).toBe(false)
+    expect(text()).not.toContain(t('sidebarDashboardOpen'))
   })
 
   /**
@@ -769,8 +843,8 @@ describe('WorkBuddy settings page', () => {
     const labels = [...document.querySelectorAll('*')]
       .filter(node => node.children.length === 0)
       .map(node => (node.textContent ?? '').trim())
-    expect(labels).toContain(t(CN_CARD_VARIANT.titleKey))
-    expect(labels).toContain(t(AI_CARD_VARIANT.titleKey))
+    expect(labels).toContain(CN_CARD_VARIANT.appName)
+    expect(labels).toContain(AI_CARD_VARIANT.appName)
   })
 
   it('keeps the two products\' totals separate', async () => {

@@ -236,6 +236,39 @@ describe('probe control route', () => {
     expect(result).toMatchObject({ status: 404, body: { error: 'sidebar-style-setting-not-supported' } })
   })
 
+  /**
+   * Whether the sidebar carries its credit card at all: the same plugin-wide
+   * route, a boolean instead of a closed set.
+   *
+   * `false` is the interesting value — it is what removes the card from the
+   * sidebar — so it has to survive the wire intact rather than being dropped as
+   * a falsy payload.
+   */
+  it('stores whether the sidebar carries its credit card', async () => {
+    const written: boolean[] = []
+    const { origin, key } = await mount({
+      setSidebarCreditVisible: async visible => {
+        written.push(visible)
+        return { state: 'updated' }
+      },
+    })
+    const headers = { 'X-WorkBuddy-Probe-Key': key }
+    expect((await post(origin, { action: 'set-sidebar-credit-visible', enabled: false }, headers)).status).toBe(200)
+    expect((await post(origin, { action: 'set-sidebar-credit-visible', enabled: true }, headers)).status).toBe(200)
+    // A truthiness test would read the string "false" as "keep the card", which
+    // is the opposite of what that request plainly means — so it is refused
+    // rather than coerced.
+    expect((await post(origin, { action: 'set-sidebar-credit-visible', enabled: 'false' }, headers)).status).toBe(400)
+    expect((await post(origin, { action: 'set-sidebar-credit-visible' }, headers)).status).toBe(400)
+    expect(written).toEqual([false, true])
+  })
+
+  it('reports the sidebar visibility as unsupported when the host cannot store it', async () => {
+    const { origin, key } = await mount()
+    const result = await post(origin, { action: 'set-sidebar-credit-visible', enabled: false }, { 'X-WorkBuddy-Probe-Key': key })
+    expect(result).toMatchObject({ status: 404, body: { error: 'sidebar-visible-setting-not-supported' } })
+  })
+
   it('writes the model allowlist, deduped and account-guarded', async () => {
     let written: readonly string[] | undefined
     let guarded: string | undefined

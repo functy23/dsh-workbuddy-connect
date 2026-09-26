@@ -244,13 +244,17 @@ export function WorkBuddyProbeControl({ directory, t }: WorkBuddyProbeControlPro
   const subscribe = useCallback((listener: () => void) => directory.subscribe(listener), [directory])
   const snapshot = useCallback(() => directory.getSnapshot(), [directory])
   const selection = useSyncExternalStore(subscribe, snapshot, snapshot).current
-  const card = selection === undefined ? undefined : cardVariantFor(selection.provider)
+  // `current` is `ModelSelection | null` upstream — null is "nothing resolved
+  // yet", which is the state every session renders its first frame in — so the
+  // guard is `== null`, never `=== undefined`: the latter passes null straight
+  // through to `selection.provider` and throws during render.
+  const card = selection == null ? undefined : cardVariantFor(selection.provider)
   // `card` identifies both the variant and its routes: a selection under either
   // provider resolves to exactly one card's status/probe pair, so the control
   // can never read one variant's state while probing the other.
-  const key = card === undefined || selection === undefined ? undefined : `${card.id}:${selection.model}`
+  const key = card === undefined || selection == null ? undefined : `${card.id}:${selection.model}`
   // A new selection gets fresh state; a late response cannot target the new model.
-  return card === undefined || selection === undefined || key === undefined
+  return card === undefined || selection == null || key === undefined
     ? null
     : <ModelProbe key={key} model={selection.model} card={card} label={useLabel(t)} t={t} />
 }

@@ -73,6 +73,7 @@ import {
   SettingsGroup,
   StatTile,
   StatusDot,
+  ToggleField,
   cx,
 } from './ui-rows.tsx'
 import type { WorkBuddyCardVariant } from './card-variants.ts'
@@ -640,7 +641,7 @@ function ModelsBlock({ variant, status, probe, busy, t, staged, context, onConte
   // The product prefix is not decoration: the two variants share model ids and
   // render as two groups of the same names, so a heading without it leaves the
   // reader to infer which list they are reading from its position on the page.
-  const heading = `${t(variant.titleKey)} · ${t('modelsHeading')}${models.length === 0 ? '' : ` · ${t('modelsCount', { count: models.length })}`}`
+  const heading = `${variant.appName} · ${t('modelsHeading')}${models.length === 0 ? '' : ` · ${t('modelsCount', { count: models.length })}`}`
   return (
     <SettingsGroup
       title={heading}
@@ -891,7 +892,7 @@ function AccountsSection({ entries, statuses, busy, now, t, onAdd, onAction }: {
         if (status === undefined || status.status !== 'error') return null
         return (
           <p key={variant.id} className="wbp-rowError" role="status">
-            {t(variant.titleKey)}: {status.message}
+            {variant.appName}: {status.message}
           </p>
         )
       })}
@@ -905,7 +906,7 @@ function AccountsSection({ entries, statuses, busy, now, t, onAdd, onAction }: {
         if (status === undefined || status.status !== 'signed-in' || status.desktopError === undefined) return null
         return (
           <p key={variant.id} className="wbp-notice" role="status">
-            {t(variant.titleKey)}: {status.desktopError}
+            {variant.appName}: {status.desktopError}
           </p>
         )
       })}
@@ -915,7 +916,7 @@ function AccountsSection({ entries, statuses, busy, now, t, onAdd, onAction }: {
             <AccountRow
               key={account.id}
               account={account}
-              product={t(variant.titleKey)}
+              product={variant.appName}
               busy={busy}
               now={now}
               t={t}
@@ -946,7 +947,7 @@ function totalRows(
     // figure is not a zero, and adding it as one would understate the total.
     const known = list.map(account => account.credits).filter((value): value is number => typeof value === 'number')
     const total = known.reduce((sum, value) => sum + value, 0)
-    return [{ id: variant.id, name: t(variant.titleKey), total: known.length === 0 ? undefined : total }]
+    return [{ id: variant.id, name: variant.appName, total: known.length === 0 ? undefined : total }]
   })
   if (rows.length === 0) return null
   // One tile per product, never a cross-product sum: the credits are not
@@ -1150,7 +1151,7 @@ function AddAccountDialog({ variant, t, busy, error, onCancel, onSubmitQr, onPol
 
   return createPortal(
     <div className="wbp-overlay" role="presentation" onClick={event => { if (event.target === event.currentTarget) onCancel() }}>
-      <div className="wbp-dialog" role="dialog" aria-modal="true" aria-label={t(variant.titleKey)}>
+      <div className="wbp-dialog" role="dialog" aria-modal="true" aria-label={variant.appName}>
         <h3 className="wbp-dialogTitle">{t('accountAddTitle')}</h3>
         <div className="wbp-dialogActions" style={{ justifyContent: 'center' }}>
           <SegmentedField
@@ -1312,6 +1313,16 @@ export interface WorkBuddySettingsPageProps {
    * that imported it would tie itself to a module the harness may not mount.
    */
   refreshPanel?: () => void
+  /**
+   * Select the dashboard in the centre column.
+   *
+   * Injected because the sidebar card is this plugin's ONLY other way in, and
+   * the card can be switched off from this very page. Without this row the
+   * switch would take the dashboard with it and leave no way back — a trap
+   * rather than a setting. Optional so a page mounted without the seam (tests,
+   * a profile with no layout) renders the switch alone instead of throwing.
+   */
+  openPanel?: () => void
 }
 
 /**
@@ -1320,7 +1331,7 @@ export interface WorkBuddySettingsPageProps {
  * Each product is driven by its own status document, so a failure or a slow
  * answer on one never blocks or blanks the other.
  */
-export function WorkBuddySettingsPage({ t, context, refreshPanel }: WorkBuddySettingsPageProps): React.ReactNode {
+export function WorkBuddySettingsPage({ t, context, refreshPanel, openPanel }: WorkBuddySettingsPageProps): React.ReactNode {
   const [statuses, setStatuses] = useState<Partial<Record<string, WorkBuddyWebStatus>>>({})
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
@@ -1771,14 +1782,20 @@ export function WorkBuddySettingsPage({ t, context, refreshPanel }: WorkBuddySet
   }, [catalogIds, keyFor, readAll, visibilityAccount])
 
   /**
-   * Store the sidebar's credit-line style.
+   * Write one plugin-wide sidebar preference.
    *
-   * An IMMEDIATE write, unlike the model filter beside it: this changes how an
-   * always-visible surface is drawn, and staging it would leave the sidebar
-   * stating the credit one way while the control claims another. The value comes
-   * back on the next status read, which is what redraws the card.
+   * An IMMEDIATE write, unlike the model filter beside it: both of these change
+   * how an always-visible surface is drawn, and staging them would leave the
+   * sidebar keeping a card (or stating the credit one way) while the control
+   * claims the other. The value comes back on the next status read, which is
+   * what redraws the card.
+   *
+   * One helper for both preferences because they are one wire shape — an action
+   * plus its value — and because the failure handling is the part that must not
+   * drift between them: a 400/404 means this host does not know the action, and
+   * that is the same story whichever control asked.
    */
-  const setCreditStyle = useCallback((style: WorkBuddySidebarCreditStyle): void => {
+  const writeSidebarPreference = useCallback((body: Record<string, unknown>): void => {
     const variant = CARD_VARIANTS[0]
     const key = variant === undefined ? undefined : keyFor(variant)
     if (variant === undefined || key === undefined) {
@@ -1792,13 +1809,13 @@ export function WorkBuddySettingsPage({ t, context, refreshPanel }: WorkBuddySet
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-WorkBuddy-Probe-Key': key },
       credentials: 'same-origin',
-      body: JSON.stringify({ action: 'set-sidebar-credit-style', creditStyle: style }),
+      body: JSON.stringify(body),
     })
       .then(async response => {
         const value: unknown = await response.json().catch(() => undefined)
         if (!response.ok) {
           setError(response.status === 400 || response.status === 404
-            ? t('sidebarStyleUnsupported')
+            ? t('sidebarSettingUnsupported')
             : `HTTP ${String(response.status)}`)
         } else if (typeof value === 'object' && value !== null && 'state' in value && value.state !== 'updated') {
           setError(String((value as Record<string, unknown>)['reason'] ?? t('requestFailed')))
@@ -1812,6 +1829,22 @@ export function WorkBuddySettingsPage({ t, context, refreshPanel }: WorkBuddySet
       .catch((cause: unknown) => { setError(cause instanceof Error ? cause.message : t('requestFailed')) })
       .finally(() => { if (mounted.current) setBusy(false) })
   }, [blockedReason, keyFor, readAll, refreshPanel, t])
+
+  /** Store the sidebar's credit-line style. */
+  const setCreditStyle = useCallback((style: WorkBuddySidebarCreditStyle): void => {
+    writeSidebarPreference({ action: 'set-sidebar-credit-style', creditStyle: style })
+  }, [writeSidebarPreference])
+
+  /**
+   * Show or hide the sidebar's credit card.
+   *
+   * The one preference on this page that removes a surface rather than
+   * reshaping it, which is why the group grows a way into the dashboard while it
+   * is off: the card is the plugin's only other route there.
+   */
+  const setCreditVisible = useCallback((visible: boolean): void => {
+    writeSidebarPreference({ action: 'set-sidebar-credit-visible', enabled: visible })
+  }, [writeSidebarPreference])
 
   /**
    * Write every staged model filter.
@@ -1914,6 +1947,25 @@ export function WorkBuddySettingsPage({ t, context, refreshPanel }: WorkBuddySet
     return undefined
   })()
 
+  /**
+   * Whether the host says the sidebar keeps its card, when it says anything.
+   *
+   * `undefined` — not `true` — when no document carries the field: that is an
+   * older host which cannot persist the preference, and the switch is then not
+   * rendered at all, exactly like the style row beside it. Once the field IS
+   * there, an absent value can no longer stand in for "on": the stored value is
+   * what the sidebar draws from, and a page that second-guessed it would lie
+   * about the state it is editing.
+   */
+  const currentCreditVisible: boolean | undefined = (() => {
+    for (const variant of CARD_VARIANTS) {
+      const status = statuses[variant.id]
+      if (status === undefined || status.status === 'error') continue
+      if (status.sidebarCreditVisible !== undefined) return status.sidebarCreditVisible
+    }
+    return undefined
+  })()
+
   return (
     // The reference layout: a 720px column of groups of hairline-separated rows.
     // No card surfaces — the page has to read as one of the harness's own
@@ -1960,35 +2012,74 @@ export function WorkBuddySettingsPage({ t, context, refreshPanel }: WorkBuddySet
         <p className="wbp-notice" role="status">{notice}</p>
       )}
       {/*
-        * How the sidebar states the credit.
+        * How the sidebar is drawn, and whether it is drawn at all.
         *
         * One plugin-wide choice, shown by both products' cards, so it lives in a
         * group of its own rather than under either product's model list — and it
         * writes IMMEDIATELY, because the surface it redraws is on screen while
         * the control is being used: staging it would let the sidebar state the
         * credit one way while this row claims the other.
+        *
+        * Two rows, in dependency order: whether the card exists, then how it
+        * states the credit. The style row is hidden while the card is off
+        * because it would describe a surface that is not there — and it is
+        * hidden on `false` only, never on `undefined`: a host that cannot state
+        * the preference is not a host that turned the card off.
         */}
-      {currentCreditStyle === undefined ? null : (
+      {currentCreditVisible === undefined && currentCreditStyle === undefined ? null : (
         <SettingsGroup title={t('sidebarStyleHeading')}>
-          <SettingRow
-            title={t('sidebarStyleLabel')}
-            description={t('sidebarStyleHint')}
-            control={
-              <SegmentedField
-                label={t('sidebarStyleLabel')}
-                disabled={busy}
-                value={currentCreditStyle}
-                options={[
-                  { value: 'remaining', label: t('sidebarStyleRemaining') },
-                  { value: 'usage', label: t('sidebarStyleUsage') },
-                ]}
-                onChange={next => {
-                  const style = isWorkBuddySidebarCreditStyle(next) ? next : undefined
-                  if (style !== undefined && style !== currentCreditStyle) setCreditStyle(style)
-                }}
-              />
-            }
-          />
+          {currentCreditVisible === undefined ? null : (
+            <SettingRow
+              title={t('sidebarVisibleLabel')}
+              titleFor="wbp-sidebar-visible"
+              description={t('sidebarVisibleHint')}
+              control={
+                <ToggleField
+                  id="wbp-sidebar-visible"
+                  label={t('sidebarVisibleLabel')}
+                  checked={currentCreditVisible}
+                  disabled={busy}
+                  onChange={setCreditVisible}
+                />
+              }
+            />
+          )}
+          {currentCreditStyle === undefined || currentCreditVisible === false ? null : (
+            <SettingRow
+              title={t('sidebarStyleLabel')}
+              description={t('sidebarStyleHint')}
+              control={
+                <SegmentedField
+                  label={t('sidebarStyleLabel')}
+                  disabled={busy}
+                  value={currentCreditStyle}
+                  options={[
+                    { value: 'remaining', label: t('sidebarStyleRemaining') },
+                    { value: 'usage', label: t('sidebarStyleUsage') },
+                  ]}
+                  onChange={next => {
+                    const style = isWorkBuddySidebarCreditStyle(next) ? next : undefined
+                    if (style !== undefined && style !== currentCreditStyle) setCreditStyle(style)
+                  }}
+                />
+              }
+            />
+          )}
+          {/*
+            * The way into the dashboard while the card is off.
+            *
+            * Only rendered when there is somewhere to navigate AND the surface
+            * that normally does it has been removed — a permanently visible
+            * duplicate of the sidebar card's own click would be one more row on
+            * a page whose whole design is that every row earns its place.
+            */}
+          {currentCreditVisible !== false || openPanel === undefined ? null : (
+            <SettingRow
+              title={t('sidebarDashboardLabel')}
+              description={t('sidebarDashboardHint')}
+              control={<ActionButton label={t('sidebarDashboardOpen')} onClick={openPanel} />}
+            />
+          )}
         </SettingsGroup>
       )}
 

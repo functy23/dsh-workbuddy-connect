@@ -105,15 +105,24 @@ export interface WorkBuddyProbeAction {
    * `refresh` re-reads the credential and re-fetches the model catalog;
    * `set-maximum-context-window` persists the international card preference;
    * `set-model-visibility` hides or shows one model for the signed-in
-   * account's picker.
+   * account's picker; `set-sidebar-credit-style` and
+   * `set-sidebar-credit-visible` persist how the sidebar's own card is drawn,
+   * and whether it is drawn at all.
    *
-   * All five are writes, which is why they share this route's in-process key
-   * and loopback guards rather than the read-only status GET.
+   * Every one of them is a write, which is why they share this route's
+   * in-process key and loopback guards rather than the read-only status GET.
    */
-  action: 'probe' | 'clear' | 'refresh' | 'set-maximum-context-window' | 'set-model-visibility' | 'set-model-allowlist' | 'open-link' | 'set-sidebar-credit-style'
+  action: 'probe' | 'clear' | 'refresh' | 'set-maximum-context-window' | 'set-model-visibility' | 'set-model-allowlist' | 'open-link' | 'set-sidebar-credit-style' | 'set-sidebar-credit-visible'
   /** Target model id; required for `probe` and `set-model-visibility`. */
   model?: string
-  /** Requested value for `set-maximum-context-window` and `set-model-visibility`. */
+  /**
+   * Requested on/off value for `set-maximum-context-window` and
+   * `set-sidebar-credit-visible`.
+   *
+   * Both are switches over an existing surface rather than a value the user
+   * types, so the wire carries the desired state itself: a retried request is
+   * then idempotent, and a lost one cannot leave the surface half-toggled.
+   */
   enabled?: boolean
   /** Requested picker visibility for `set-model-visibility`. */
   visible?: boolean
@@ -518,6 +527,20 @@ export function isWorkBuddySidebarCreditStyle(value: unknown): value is WorkBudd
   return value === 'remaining' || value === 'usage'
 }
 
+/**
+ * Whether the sidebar keeps its credit card at all, when nothing says otherwise.
+ *
+ * One shared constant rather than a literal on each side, because BOTH halves
+ * fall back to it on a document that does not carry the field: an older host, a
+ * route assembled without the preference (tests, a headless profile), or a read
+ * that failed. The fallback is "present", and that is the one asymmetry worth
+ * stating in a constant — every other preference here reshapes a surface that is
+ * always there, while this one can REMOVE a surface, so an unknown value has to
+ * leave it alone rather than take it away. A browser that defaulted the other
+ * way would empty the sidebar of anyone whose host merely predates the field.
+ */
+export const WORKBUDDY_SIDEBAR_CREDIT_VISIBLE_DEFAULT = true
+
 /** The JSON document the plugin card renders. */
 export type WorkBuddyWebStatus =
   | {
@@ -538,6 +561,16 @@ export type WorkBuddyWebStatus =
      * an account existed would re-shape the card on the user's first sign-in.
      */
     sidebarCreditStyle?: WorkBuddySidebarCreditStyle
+    /**
+     * Whether the sidebar keeps its credit card at the bottom of the column.
+     *
+     * Carried in BOTH sign-in states for the same reason the style is: the card
+     * is the user's always-on summary, and one that reappeared the moment an
+     * account was added would make the switch look like it had not been saved.
+     * Absent when the host cannot persist the preference — read as
+     * {@link WORKBUDDY_SIDEBAR_CREDIT_VISIBLE_DEFAULT}, never as "off".
+     */
+    sidebarCreditVisible?: boolean
     /**
      * The account pool, which may be empty.
      *
@@ -579,6 +612,18 @@ export type WorkBuddyWebStatus =
      * cannot persist the preference: the card then keeps its default shape.
      */
     sidebarCreditStyle?: WorkBuddySidebarCreditStyle
+    /**
+     * Whether the sidebar keeps its credit card at the bottom of the column.
+     *
+     * The ONE preference that can remove a surface rather than reshape it, which
+     * is why it is stated on the document and not kept in browser state: the
+     * sidebar card, the dashboard it opens and the settings row that writes it
+     * are three mounts, and a preference that only one of them knew would leave
+     * the card drawn against the user's choice until the next reload. Absent when
+     * the host cannot persist the preference — read as
+     * {@link WORKBUDDY_SIDEBAR_CREDIT_VISIBLE_DEFAULT}, never as "off".
+     */
+    sidebarCreditVisible?: boolean
     /**
      * A diagnosable problem reading the desktop app's own credential, while the
      * pool still serves from its other members.

@@ -15,6 +15,7 @@
  */
 
 import type { WorkBuddySidebarCreditStyle, WorkBuddyWebAccount, WorkBuddyWebStatus } from '../status-paths.ts'
+import { WORKBUDDY_SIDEBAR_CREDIT_VISIBLE_DEFAULT } from '../status-paths.ts'
 import { CARD_VARIANTS } from './card-variants.ts'
 import type { WorkBuddyCardVariant } from './card-variants.ts'
 import type { PanelKey } from './panel-copy.ts'
@@ -105,6 +106,16 @@ export interface PanelView {
    * state the preference (an older host) leaves the default in place.
    */
   creditStyle: WorkBuddySidebarCreditStyle
+  /**
+   * Whether the sidebar draws its footer card at all — the user's choice,
+   * carried on the status document beside the style.
+   *
+   * Resolved here rather than in the component for the same reason as the
+   * style, and read by BOTH surfaces: the card uses it to decide whether to
+   * render, and the dashboard's own numbers are unaffected either way (the
+   * switch hides a surface, it does not stop the plugin reading the pool).
+   */
+  creditVisible: boolean
 }
 
 /** Inputs the projection needs beyond the snapshot itself. */
@@ -252,6 +263,7 @@ export function buildPanelView(options: BuildPanelViewOptions): PanelView {
     modelCount,
     footTitle: footTitle(products),
     creditStyle: creditStyleOf(snapshot),
+    creditVisible: creditVisibleOf(snapshot),
   }
 }
 
@@ -273,6 +285,23 @@ function creditStyleOf(snapshot: WorkBuddyPanelSnapshot): WorkBuddySidebarCredit
   return 'remaining'
 }
 
+/**
+ * Whether the sidebar keeps its card, as the host stated it.
+ *
+ * The same shape as {@link creditStyleOf} — one plugin-wide answer read from
+ * whichever document carries it — with one deliberate difference: a document
+ * that does NOT state it means "present", not "hidden". An older host, a read
+ * that failed, or a profile with no settings service must all leave the card
+ * exactly where it was; only an explicit `false` takes it away.
+ */
+function creditVisibleOf(snapshot: WorkBuddyPanelSnapshot): boolean {
+  for (const product of CARD_VARIANTS) {
+    const status = snapshot.statuses[product.id]
+    if (status === undefined || status.status === 'error') continue
+    if (status.sidebarCreditVisible !== undefined) return status.sidebarCreditVisible
+  }
+  return WORKBUDDY_SIDEBAR_CREDIT_VISIBLE_DEFAULT
+}
 /** Read one numeric stat back out of a product block. */
 function countOf(product: PanelProductView, label: PanelKey): number {
   const stat = product.stats.find(candidate => candidate.label === label)

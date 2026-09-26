@@ -62,6 +62,17 @@ export interface WorkBuddyStatusRouteOptions {
    */
   sidebarCreditStyle?: () => WorkBuddySidebarCreditStyle | undefined
   /**
+   * Whether the sidebar keeps its credit card at all.
+   *
+   * Read per document, exactly like the style beside it, and for the same
+   * reason: it is written through the host's settings service, so the very next
+   * read has to reflect it. A route assembled without the getter (tests, a
+   * headless profile) leaves the field out, and the card then keeps its default
+   * — present — rather than vanishing from a document that never knew the
+   * setting.
+   */
+  sidebarCreditVisible?: () => boolean | undefined
+  /**
    * Why the pool is empty, when the reason is diagnosable.
    *
    * "Signed out" is the wrong answer for a desktop file that exists but holds
@@ -315,11 +326,14 @@ function accountSections(
   accounts: NonNullable<Extract<WorkBuddyWebStatus, { status: 'signed-in' }>['accounts']>
   probeKey?: string
   sidebarCreditStyle?: 'remaining' | 'usage'
+  sidebarCreditVisible?: boolean
 } {
-  // The display preference rides this helper because it is shared by both sign-in
-  // states for the same reason the control key is: the sidebar draws its credit
-  // line the same way whether the pool is empty or not.
+  // The display preferences ride this helper because they are shared by both
+  // sign-in states for the same reason the control key is: the sidebar draws its
+  // credit line the same way whether the pool is empty or not, and whether it is
+  // drawn at all is equally independent of what the pool holds.
   const creditStyle = deps.sidebarCreditStyle?.()
+  const creditVisible = deps.sidebarCreditVisible?.()
   return {
     accounts: {
       accounts: snapshot.accounts,
@@ -328,6 +342,7 @@ function accountSections(
     },
     ...deps.probeKey === undefined ? {} : { probeKey: deps.probeKey },
     ...creditStyle === undefined ? {} : { sidebarCreditStyle: creditStyle },
+    ...creditVisible === undefined ? {} : { sidebarCreditVisible: creditVisible },
   }
 }
 

@@ -297,3 +297,38 @@ describe('maximum-context preference capability', () => {
     expect(document).toHaveProperty('probe')
   })
 })
+
+describe('sidebar credit card capability', () => {
+  /**
+   * The sidebar's two display preferences ride the document together, and both
+   * must be readable before any other surface has run — the sidebar card draws
+   * itself from this read alone.
+   *
+   * `false` is what has to survive JSON here: it is the value that removes the
+   * card, and a getter whose answer was dropped as falsy would leave a card the
+   * user had switched off sitting in the sidebar until the next restart.
+   */
+  it('carries both display preferences, including an off card', async () => {
+    const port = await startStatusServer({
+      sidebarCreditStyle: () => 'usage',
+      sidebarCreditVisible: () => false,
+    })
+    const response = await requestOnce({ port, method: 'GET', headers: { host: '127.0.0.1' } })
+    const document = JSON.parse(response.body) as Record<string, unknown>
+    expect(document['sidebarCreditStyle']).toBe('usage')
+    expect(document['sidebarCreditVisible']).toBe(false)
+  })
+
+  it('omits the field when the getter answers undefined, leaving the card to its default', async () => {
+    const port = await startStatusServer({
+      sidebarCreditStyle: () => 'remaining',
+      sidebarCreditVisible: () => undefined,
+    })
+    const response = await requestOnce({ port, method: 'GET', headers: { host: '127.0.0.1' } })
+    const document = JSON.parse(response.body) as Record<string, unknown>
+    expect(document).not.toHaveProperty('sidebarCreditVisible')
+    // The style beside it is unaffected: one absent preference must not take the
+    // other with it.
+    expect(document['sidebarCreditStyle']).toBe('remaining')
+  })
+})

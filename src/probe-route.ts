@@ -62,6 +62,19 @@ export interface WorkBuddyProbeRouteOptions {
    */
   setSidebarCreditStyle?: (style: WorkBuddySidebarCreditStyle) => Promise<{ state: string; reason?: string }>
   /**
+   * Show or hide the sidebar's credit card.
+   *
+   * The second half of the same preference the style above describes, and
+   * plugin-wide for the same reason: there is one sidebar, so there is one
+   * answer to whether it carries a card. Both variants' routes accept the write
+   * and the next read of either document carries it back.
+   *
+   * `false` removes the card, not just its figures — the card is the plugin's
+   * only other way into the dashboard, so the settings page offers that
+   * destination itself while the card is off (see the page's `openPanel`).
+   */
+  setSidebarCreditVisible?: (visible: boolean) => Promise<{ state: string; reason?: string }>
+  /**
    * Open one absolute http(s) link in the user's own browser.
    *
    * The sign-in routes hand the user a page on the provider's site, and only
@@ -188,6 +201,14 @@ function parseAction(text: string): WorkBuddyProbeAction | undefined {
     if (!isWorkBuddySidebarCreditStyle(style)) return undefined
     return { action: 'set-sidebar-credit-style', creditStyle: style }
   }
+  if (action === 'set-sidebar-credit-visible') {
+    const enabled = wrapped['enabled']
+    // A strict boolean rather than a truthiness test: the string "false" is
+    // truthy, so coerced input would keep the card on a request that plainly
+    // meant to remove it.
+    if (typeof enabled !== 'boolean') return undefined
+    return { action: 'set-sidebar-credit-visible', enabled }
+  }
   if (action === 'set-model-allowlist') {
     const account = wrapped['account']
     const allowlist = wrapped['allowlist']
@@ -281,6 +302,14 @@ export function workBuddyProbeHandler(
           return
         }
         json(res, 200, await deps.setSidebarCreditStyle(action.creditStyle as WorkBuddySidebarCreditStyle))
+        return
+      }
+      if (action.action === 'set-sidebar-credit-visible') {
+        if (deps.setSidebarCreditVisible === undefined) {
+          json(res, 404, { error: 'sidebar-visible-setting-not-supported' })
+          return
+        }
+        json(res, 200, await deps.setSidebarCreditVisible(action.enabled === true))
         return
       }
       if (action.action === 'set-model-visibility') {

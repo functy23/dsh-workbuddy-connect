@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
+import { createElement } from 'react'
+import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { buildPanelView } from '../src/client/panel.ts'
+import { WorkBuddyFooterEntry } from '../src/client/panel-view.tsx'
 import { createWorkBuddyPanelStore } from '../src/client/panel-store.ts'
+import type { WorkBuddyPanelSnapshot } from '../src/client/panel-store.ts'
 import { panelTranslator, PANEL_COPY_EN, PANEL_COPY_ZH } from '../src/client/panel-copy.ts'
 import { CARD_VARIANTS } from '../src/client/card-variants.ts'
 import type { WorkBuddyWebStatus } from '../src/status-paths.ts'
@@ -102,6 +106,57 @@ describe('the sidebar credit line', () => {
     expect(view('usage').creditStyle).toBe('usage')
   })
 
+  /**
+   * Whether the card is drawn at all is a second, independent answer on the same
+   * document — and the ONLY one whose default is "present".
+   *
+   * The asymmetry is the whole point: every other preference reshapes a surface
+   * that is always there, so an absent value falls back to the old shape. This
+   * one can REMOVE a surface, and an absent value must therefore mean "leave it
+   * alone" — a card that vanished on a host which merely predates the field
+   * would look like a bug, and would take the dashboard's only door with it.
+   */
+  it('keeps the sidebar card unless the document says, in so many words, that it is off', () => {
+    const view = (visible?: boolean) => buildPanelView({
+      snapshot: {
+        statuses: {
+          [CARD_VARIANTS[0]!.id]: { ...signedIn(), ...visible === undefined ? {} : { sidebarCreditVisible: visible } } as WorkBuddyWebStatus,
+          [CARD_VARIANTS[1]!.id]: undefined,
+        },
+        loading: false,
+        fetchedAt: 1,
+      },
+    })
+    expect(view(undefined).creditVisible).toBe(true)
+    expect(view(true).creditVisible).toBe(true)
+    expect(view(false).creditVisible).toBe(false)
+  })
+
+  /**
+   * One answer for the whole plugin, taken from whichever document states it.
+   *
+   * Both products' routes are told the same value, so a sweep in which only one
+   * product's read landed must still answer from the one that did — otherwise
+   * the card would flicker back into the sidebar on the strength of a failed
+   * request.
+   */
+  it('reads the visibility from whichever product states it, and ignores a failed read', () => {
+    const view = (
+      cn: WorkBuddyWebStatus | undefined,
+      ai: WorkBuddyWebStatus | undefined,
+    ) => buildPanelView({
+      snapshot: { statuses: { [CARD_VARIANTS[0]!.id]: cn, [CARD_VARIANTS[1]!.id]: ai }, loading: false, fetchedAt: 1 },
+    })
+    const off = { ...signedIn(), sidebarCreditVisible: false } as WorkBuddyWebStatus
+    const on = { ...signedIn(), sidebarCreditVisible: true } as WorkBuddyWebStatus
+    // Only the international document answered: it still decides.
+    expect(view(undefined, off).creditVisible).toBe(false)
+    // A host error is not a preference.
+    expect(view({ status: 'error', message: 'boom' }, off).creditVisible).toBe(false)
+    expect(view(off, on).creditVisible).toBe(false)
+    expect(view(on, { status: 'error', message: 'boom' }).creditVisible).toBe(true)
+  })
+
   it('names the figure in the label, in both languages', () => {
     // The label carries the meaning ("WorkBuddy 剩余额度"), which is what lets a
     // bare number sit beside it without a column header. The Chinese side is read
@@ -111,6 +166,94 @@ describe('the sidebar credit line', () => {
     expect(zh('creditRemainingLabel', { product: 'WorkBuddy AI' })).toBe('WorkBuddy AI 剩余额度')
     expect(panelTranslator(undefined)('creditRemainingLabel', { product: 'WorkBuddy AI' }))
       .toBe('WorkBuddy AI remaining')
+  })
+})
+
+/**
+ * The card's own component, driven through the test renderer.
+ *
+ * The projection above says whether the card SHOULD be drawn; only this can say
+ * that it is not, and that switching it off does not quietly take the shared
+ * poll down with it. The entry is the poll's only home — the dashboard and the
+ * composer badge read the snapshot it keeps fresh — so "renders nothing" and
+ * "stops working" have to be told apart here.
+ */
+describe('the sidebar footer entry', () => {
+  /**
+   * Render the card against one fixed snapshot and report both the tree it drew
+   * and whether the poll was started.
+   */
+  function renderEntry(visible: boolean | undefined, wide: boolean): {
+    tree: ReactTestRenderer | undefined
+    starts: number
+  } {
+    const state: WorkBuddyPanelSnapshot = {
+      statuses: {
+        [CARD_VARIANTS[0]!.id]: {
+          ...signedIn({ accounts: { accounts: [{
+            id: 'a1', uid: 'u1', name: 'First', origin: 'desktop', domain: 'copilot.tencent.com',
+            renewable: true, enabled: true, available: true, credits: 100, expiresAtMs: 0, lastUsedAtMs: 0, addedAtMs: 0,
+          }] } }),
+          ...visible === undefined ? {} : { sidebarCreditVisible: visible },
+        } as WorkBuddyWebStatus,
+      },
+      loading: false,
+      fetchedAt: 1,
+    }
+    let starts = 0
+    let tree: ReactTestRenderer | undefined
+    act(() => {
+      tree = create(createElement(WorkBuddyFooterEntry, {
+        // The renderer hands the component its seats already bound; here the
+        // store is replaced by one immutable snapshot.
+        useWorkBuddyPanel: <T,>(selector: (snapshot: WorkBuddyPanelSnapshot) => T): T => selector(state),
+        // The seat is declared as `(key: string) => string`, which is wider than
+        // the dictionary-typed translator above it — so the card is handed the
+        // open shape the slot renderer's locale seat really has, with the
+        // interpolation done the way the host does it.
+        t: (key: string, params: Record<string, unknown> = {}): string =>
+          Object.entries(params).reduce(
+            (text, [name, value]) => text.replace(`{${name}}`, String(value)),
+            String(PANEL_COPY_EN[key as keyof typeof PANEL_COPY_EN] ?? key),
+          ),
+        refresh: () => {},
+        startAutoRefresh: () => { starts += 1; return () => {} },
+        open: () => {},
+        close: () => {},
+        wide,
+      }))
+    })
+    return { tree, starts }
+  }
+
+  it('draws the card, and starts the poll, when the document says nothing about visibility', () => {
+    const { tree, starts } = renderEntry(undefined, true)
+    expect(tree?.toJSON()).not.toBeNull()
+    expect(starts).toBe(1)
+  })
+
+  it('draws the product line while the card is on', () => {
+    const { tree } = renderEntry(true, true)
+    const rendered = JSON.stringify(tree?.toJSON())
+    // The balance, named by its product — the one figure the card exists to show.
+    expect(rendered).toContain('100')
+    expect(rendered).toContain('remaining')
+  })
+
+  it('draws nothing, in both the wide column and the rail, once the card is switched off', () => {
+    // Both fold states: the rail's ring is a credit figure too, so a switch that
+    // only emptied the wide card would leave the number on screen.
+    expect(renderEntry(false, true).tree?.toJSON()).toBeNull()
+    expect(renderEntry(false, false).tree?.toJSON()).toBeNull()
+  })
+
+  it('keeps the shared poll running while it draws nothing', () => {
+    // The bug this pins: returning early BEFORE the hook would unmount the only
+    // component that starts the sweep, leaving the dashboard and the composer
+    // badge frozen on whatever they last read.
+    const { tree, starts } = renderEntry(false, true)
+    expect(tree?.toJSON()).toBeNull()
+    expect(starts).toBe(1)
   })
 })
 
@@ -360,12 +503,12 @@ describe('panel copy', () => {
     // product name.
     const untranslated = Object.keys(PANEL_COPY_EN).filter(key =>
       PANEL_COPY_ZH[key as keyof typeof PANEL_COPY_EN] === PANEL_COPY_EN[key as keyof typeof PANEL_COPY_EN]
-      // Exempt: product names spelled the same in both languages, and
-      // language-neutral numeric formats (a "used / total" pair carries no words
-      // to translate — translating it would mean inventing a different
+      // Exempt: product names spelled the same in both languages, a placeholder
+      // dash, and language-neutral numeric formats (a "used / total" pair carries
+      // no words to translate — translating it would mean inventing a different
       // separator per language for no reader's benefit).
       && ![
-        'nav', 'accountCount', 'creditTotal', 'modelCount', 'creditPending', 'creditUsed',
+        'nav', 'creditPending', 'creditUsed',
         // The composer badge is "product: figure" in both languages: a colon and
         // a grouped number carry no words, and translating the separator would
         // mean inventing a different punctuation per language for no reader.

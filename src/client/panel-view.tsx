@@ -26,7 +26,7 @@ import { Badge, Ring, StatTile as UiStatTile, cx } from './ui-rows.tsx'
 import { ActionButton } from './ui-button.tsx'
 import type { WorkBuddyPanelStore } from './panel-store.ts'
 import { panelTranslator } from './panel-copy.ts'
-import type { PanelKey, PanelTranslator } from './panel-copy.ts'
+import type { PanelKey, PanelLocaleSeat, PanelTranslator } from './panel-copy.ts'
 import { buildPanelView } from './panel.ts'
 import type { PanelProductView, PanelView } from './panel.ts'
 import type { WorkBuddyPanelSnapshot } from './panel-store.ts'
@@ -86,8 +86,13 @@ export interface PanelComponentProps {
    * Locale seat for the `panel.workbuddy` namespace, bound by the
    * registration's own `locale` declaration. Optional so a missing locale face
    * degrades to English instead of crashing the surface.
+   *
+   * Typed as {@link PanelLocaleSeat} — the namespace's own key union, not
+   * `string` — because that is what the renderer actually composes for a
+   * registration that declares a `locale`: a seat accepting every string is the
+   * one shape it cannot be assigned to.
    */
-  t?: (key: string, params?: Record<string, unknown>) => string
+  t?: PanelLocaleSeat
   refresh(): void
   startAutoRefresh(): () => void
   open(): void
@@ -265,6 +270,12 @@ function ringPercent(view: PanelView): number {
  *
  * The poll starts here rather than in the panel: the card is always mounted, so
  * the dashboard opens with data already in hand.
+ *
+ * The one thing that can take this card away is the user's own switch
+ * ({@link PanelView.creditVisible}). The component still MOUNTS when that is
+ * off — it renders `null` and keeps the shared poll alive with it. That matters:
+ * the poll's home is this entry, and a component that unmounted would leave the
+ * dashboard and the composer badge reading a snapshot nothing refreshes.
  */
 export function WorkBuddyFooterEntry(props: WorkBuddyFooterEntryProps): ReactNode {
   const view = usePanelView(props)
@@ -273,6 +284,11 @@ export function WorkBuddyFooterEntry(props: WorkBuddyFooterEntryProps): ReactNod
   const refresh = props.refresh
 
   useEffectOnce(startAutoRefresh)
+
+  // Switched off in the settings. Returning after the hooks (never before them)
+  // is what keeps the mount order stable across the flip, and what keeps the
+  // background sweep running for the surfaces that remain on screen.
+  if (!view.creditVisible) return null
 
   const label = view.footTitle === '' ? t('footerLabel') : view.footTitle
 

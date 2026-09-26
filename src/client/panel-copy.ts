@@ -32,14 +32,21 @@ export const PANEL_COPY_EN = {
   loading: 'Reading the WorkBuddy pools…',
   /** Shown when nothing has ever been read (no host route answered). */
   unavailable: 'The host did not report its pools. Update the plugin, or restart DSH.',
-  /** Accounts in the pool, per product. */
-  accountCount: '{count}',
+  /**
+   * The per-product tile captions, read BESIDE their figures: the tile draws the
+   * caption as its small label and the count as its large value.
+   *
+   * Captions, never placeholders — a value like `'{count}'` here is drawn
+   * literally, because nothing fills it: the tile translates the label with no
+   * parameters, so only a real caption can render.
+   */
+  accountCount: 'Accounts',
   /** One product's total remaining credit. */
-  creditTotal: '{total}',
+  creditTotal: 'Credit',
   /** A product whose accounts report no balance yet. */
   creditPending: '—',
   /** Models currently served, per product. */
-  modelCount: '{count}',
+  modelCount: 'Models',
   /** Where the served model list came from: a live upstream fetch. */
   sourceLive: 'Live',
   /** Where the served model list came from: this account's last saved fetch. */
@@ -90,10 +97,10 @@ export const PANEL_COPY_ZH: Record<PanelKey, string> = {
   close: '关闭',
   loading: '正在读取 WorkBuddy 账号池…',
   unavailable: '宿主未返回账号池。请更新插件或重启 DSH。',
-  accountCount: '{count}',
-  creditTotal: '{total}',
+  accountCount: '账号',
+  creditTotal: '积分',
   creditPending: '—',
-  modelCount: '{count}',
+  modelCount: '模型',
   sourceLive: '实时',
   sourceSaved: '已保存',
   sourceFallback: '内置',
@@ -115,6 +122,19 @@ export const PANEL_COPY_ZH: Record<PanelKey, string> = {
 /** Translate one panel key with optional {name} parameters. */
 export type PanelTranslator = (key: PanelKey, params?: Record<string, unknown>) => string
 
+/**
+ * A locale seat as this module can use one.
+ *
+ * The key parameter is OUR key union rather than `string`, on purpose. A seat the
+ * renderer composes from a registration's `locale` accepts exactly its
+ * namespace's keys — narrower than `string` — and parameter types are
+ * contravariant, so a seat is the one function that a `(key: string)` parameter
+ * cannot accept. Declaring the narrower union is what lets the seat be handed
+ * straight in; a plain `(key: string) => string` still qualifies, because it
+ * accepts everything ours can ask for.
+ */
+export type PanelLocaleSeat = (key: PanelKey, params?: Record<string, unknown>) => string
+
 /** Fill {name} placeholders from a parameter record. */
 function interpolate(template: string, params: Record<string, unknown>): string {
   return template.replace(/\{(\w+)\}/gu, (match, name: string) =>
@@ -131,7 +151,7 @@ export const panelTextEN: PanelTranslator = (key, params = {}) =>
  * partially translated locale) still renders a readable panel.
  */
 export function panelTranslator(
-  t: ((key: string, params?: Record<string, unknown>) => string) | undefined,
+  t: PanelLocaleSeat | undefined,
 ): PanelTranslator {
   if (t === undefined) return panelTextEN
   return (key, params = {}) => {

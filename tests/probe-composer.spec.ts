@@ -29,6 +29,12 @@ describe('Composer model probe', () => {
   const directory = {
     getSnapshot: () => state,
     subscribe: (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener) },
+    // The store's write half. The control only ever reads, but the double
+    // IMPLEMENTS it instead of asserting past it: the cast that used to stand
+    // here is what let a guard against the wrong falsy value survive its own
+    // typecheck (see the null-selection case below).
+    update: (mutator: (snapshot: typeof state) => void) => { mutator(state); listeners.forEach(listener => listener()) },
+    set: (next: typeof state) => { state = next; listeners.forEach(listener => listener()) },
   } as WorkBuddyProbeControlProps['directory']
   const t: WorkBuddyProbeControlProps['t'] = (key, params = {}) =>
     Object.entries(params).reduce((text, [name, value]) => text.replace(`{${name}}`, String(value)), en[key] as string)
@@ -103,6 +109,22 @@ describe('Composer model probe', () => {
   const button = () => view!.root.findAllByType('button')
   const buttonLabels = () => button().map(node => node.children.join(''))
   const tooltips = () => view!.root.findAllByProps({ role: 'tooltip' })
+
+  /**
+   * A directory with no selection yet renders nothing — and above all does not
+   * throw while doing it.
+   *
+   * `ModelDirectoryState.current` is `ModelSelection | null` upstream: null is
+   * "nothing resolved yet", which is the state a session's very first frame
+   * renders in. The double above only ever holds a real selection, so a guard
+   * written against `undefined` alone looks right here and dereferences null in
+   * the app.
+   */
+  it('renders nothing, and throws nothing, while the directory has no selection', async () => {
+    state = { current: null, status: 'idle', groups: [], failures: [], error: null, routable: null }
+    await mount()
+    expect(view?.toJSON()).toBeNull()
+  })
 
   it('does not read status or show an entry for another provider', async () => {
     select('other', 'glm-5.2')

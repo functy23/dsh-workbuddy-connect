@@ -311,6 +311,19 @@ export interface Config {
    * a setting instead of a decision this plugin makes for the user.
    */
   sidebarCreditStyle?: WorkBuddySidebarCreditStyle
+  /**
+   * Whether the sidebar keeps its credit card at all.
+   *
+   * The one preference here that REMOVES a surface instead of reshaping it:
+   * `false` takes the card out of the sidebar's foot, which is where both the
+   * resident credit summary and the way into the dashboard live. The dashboard
+   * therefore stays reachable from the settings page while this is off — a
+   * switch that stranded a destination would be a trap rather than a setting.
+   *
+   * Defaults to on ({@link WORKBUDDY_SIDEBAR_CREDIT_VISIBLE_DEFAULT}), so a
+   * config written before this field existed keeps drawing the card.
+   */
+  sidebarCreditVisible?: boolean
 }
 
 /** Explicit CN desktop auth-file path (shared by the plugin schema and its section). */
@@ -325,6 +338,9 @@ const MAXIMUM_CONTEXT_WINDOW_FIELD = z.boolean().default(true)
 /** Sidebar credit line style (shared by both variants' cards, which show the same figure). */
 const SIDEBAR_CREDIT_STYLE_FIELD = z.union(['remaining', 'usage']).default('remaining')
   .description('Sidebar credit line: "remaining" states the balance per product; "usage" shows used / total over a bar')
+/** Whether the sidebar keeps its credit card (shared by both variants, which write one sidebar). */
+const SIDEBAR_CREDIT_VISIBLE_FIELD = z.boolean().default(true)
+  .description('Show the WorkBuddy credit card at the bottom of the sidebar (off: the dashboard stays reachable from this settings page)')
 
 /**
  * The plugin's own config fields, built once so the two generations can share
@@ -344,6 +360,7 @@ const CONFIG_FIELDS = {
   probeConsent: PROBE_CONSENT_FIELD,
   useMaximumContextWindow: MAXIMUM_CONTEXT_WINDOW_FIELD,
   sidebarCreditStyle: SIDEBAR_CREDIT_STYLE_FIELD,
+  sidebarCreditVisible: SIDEBAR_CREDIT_VISIBLE_FIELD,
 } as const
 
 /**
@@ -935,6 +952,14 @@ export function apply(ctx: Context, config: Config): void {
    */
   let setSidebarCreditStyle: ((style: WorkBuddySidebarCreditStyle) => Promise<{ state: string; reason?: string }>) | undefined
   /**
+   * Writes whether the sidebar keeps its credit card, through the same settings
+   * service. Undefined on a host with no settings service, exactly like the
+   * style beside it: the status document then carries no value and the card
+   * keeps its default (present) rather than vanishing on a write that could not
+   * have been saved.
+   */
+  let setSidebarCreditVisible: ((visible: boolean) => Promise<{ state: string; reason?: string }>) | undefined
+  /**
    * Whether the host mounted a settings service this plugin can write through.
    * Decided once, inside the `settings` inject. The maximum-context getter
    * answers `undefined` while this is false, and a status document without the
@@ -1035,6 +1060,14 @@ export function apply(ctx: Context, config: Config): void {
         // knows how to draw itself before anything else on the page can tell it
         // what the setting says.
         sidebarCreditStyle: () => current().sidebarCreditStyle === 'usage' ? 'usage' : 'remaining',
+        // The card may be switched off entirely. Read straight off the live
+        // config, so the next status read after the write already reflects it and
+        // the sidebar can be told to drop the card without a reload. `!== false`
+        // rather than a truthiness test: an untouched config field resolves to
+        // the schema default, and a hand-edited `settings.yaml` missing the key
+        // must still mean "present" — the opposite reading would empty the
+        // sidebar of anyone whose file predates the field.
+        sidebarCreditVisible: () => current().sidebarCreditVisible !== false,
         emptyReason: () => desktopReadError.get(runtime.variant.id),
         store: runtime.store,
         probeKey,
@@ -1134,6 +1167,19 @@ export function apply(ctx: Context, config: Config): void {
           const result = await setSidebarCreditStyle(style)
           // The card redraws from a status read, so the change has to be visible
           // to the next one without waiting for a sweep.
+          if (result.state === 'updated') ctx.emit('llm/adapters-updated')
+          return result
+        },
+        // Also on BOTH variants, and for a stronger reason than the style: this
+        // one can remove the card altogether, and the card is what tells the
+        // browser the setting exists. Whichever route the settings page reached
+        // first has to be able to carry the write.
+        setSidebarCreditVisible: async visible => {
+          if (setSidebarCreditVisible === undefined) return { state: 'failed', reason: 'settings are unavailable' }
+          const result = await setSidebarCreditVisible(visible)
+          // Same reason as the style: the sidebar draws itself from a status
+          // read, so an immediate nudge is what makes the card leave the column
+          // as the switch is flipped rather than on its next minute tick.
           if (result.state === 'updated') ctx.emit('llm/adapters-updated')
           return result
         },
@@ -1284,6 +1330,20 @@ export function apply(ctx: Context, config: Config): void {
       }
       try {
         await forms.update(entryId() ?? PROFILE_ENTRY_ID, { sidebarCreditStyle: style })
+      } catch (error: unknown) {
+        return { state: 'failed', reason: error instanceof Error ? error.message.slice(0, 300) : String(error) }
+      }
+      return { state: 'updated' }
+    }
+    // Same write, one field over: whether the sidebar carries the card at all.
+    // No client-side validation to do — a boolean from the wire is already the
+    // whole value domain, and the route refused anything that was not one.
+    setSidebarCreditVisible = async visible => {
+      if (forms.update === undefined) {
+        return { state: 'failed', reason: 'this host does not accept settings writes' }
+      }
+      try {
+        await forms.update(entryId() ?? PROFILE_ENTRY_ID, { sidebarCreditVisible: visible })
       } catch (error: unknown) {
         return { state: 'failed', reason: error instanceof Error ? error.message.slice(0, 300) : String(error) }
       }

@@ -2658,6 +2658,19 @@ interface Config {
    * a setting instead of a decision this plugin makes for the user.
    */
   sidebarCreditStyle?: WorkBuddySidebarCreditStyle;
+  /**
+   * Whether the sidebar keeps its credit card at all.
+   *
+   * The one preference here that REMOVES a surface instead of reshaping it:
+   * `false` takes the card out of the sidebar's foot, which is where both the
+   * resident credit summary and the way into the dashboard live. The dashboard
+   * therefore stays reachable from the settings page while this is off — a
+   * switch that stranded a destination would be a trap rather than a setting.
+   *
+   * Defaults to on ({@link WORKBUDDY_SIDEBAR_CREDIT_VISIBLE_DEFAULT}), so a
+   * config written before this field existed keeps drawing the card.
+   */
+  sidebarCreditVisible?: boolean;
 }
 /**
  * The composition schema: what the loader reads and what 0.1.7's settings forms

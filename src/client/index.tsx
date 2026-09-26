@@ -308,10 +308,23 @@ export function apply(ctx: ClientContext): void {
         // this page's own reads do not touch, and whose poll interval is a minute
         // long, which is how a preference that changes how the card is DRAWN
         // would otherwise appear to do nothing.
-        inject: (): { t: WorkBuddyTranslate, context: ClientContext, refreshPanel: () => void } => ({
+        //
+        // `openPanel` is the same selection the card's own click performs. It is
+        // here because the card can be switched OFF from this page, and this
+        // plugin has no second route into the dashboard: without it, turning the
+        // card off would hide the only door to the panel it opens. Read at click
+        // time through the same reflective seam as the card (ui-layout is not a
+        // dependency of this bundle).
+        inject: (): {
+          t: WorkBuddyTranslate
+          context: ClientContext
+          refreshPanel: () => void
+          openPanel: () => void
+        } => ({
           t,
           context: ctx,
           refreshPanel: () => { void panelStore.refresh() },
+          openPanel: () => { panelFace().open() },
         }),
       }, WorkBuddySettingsPage)) ?? NOOP_DISPOSER
     ))
