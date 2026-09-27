@@ -1,8 +1,8 @@
 # DSH WorkBuddy Connect
 
 
-[![npm version](https://img.shields.io/npm/v/dsh-workbuddy-connect)](https://www.npmjs.com/package/dsh-workbuddy-connect)
-[![GitHub stars](https://img.shields.io/github/stars/corrinehu/dsh-workbuddy-connect)](https://github.com/corrinehu/dsh-workbuddy-connect)
+[![version](https://img.shields.io/badge/version-0.13.0-blue)](https://github.com/functy23/dsh-workbuddy-connect/blob/main/package.json)
+[![GitHub stars](https://img.shields.io/github/stars/functy23/dsh-workbuddy-connect)](https://github.com/functy23/dsh-workbuddy-connect)
 [![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 [![DSH core](https://img.shields.io/badge/DSH-0.1.7--alpha.1%2B-blueviolet)](https://github.com/deepseek-ai/deepseek-harness)
 
@@ -12,7 +12,7 @@ English | [中文](./README.md)
 
 Brings every model in the WorkBuddy desktop app (GLM-5.3, GLM-5.2, DeepSeek-V4-Pro, DeepSeek-V4-Flash, Kimi-K3, MiniMax-M3, Hy3, and more) straight into [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) — zero configuration in the DSH chat.
 
-Both the CN **WorkBuddy** and the international **WorkBuddy AI** apps are supported (international support since **v0.5.0**): whichever one you have installed shows up as its own model group, and having both installed shows both, each with its own account and credit.
+Both the CN **WorkBuddy** and the international **WorkBuddy AI** apps are supported: whichever one you have installed shows up as its own model group, and having both installed shows both, each with its own account and credit.
 
 
 ## Features
@@ -49,7 +49,7 @@ Both the CN **WorkBuddy** and the international **WorkBuddy AI** apps are suppor
 - **Enterprise credit**: on the CN product, enterprise accounts (non-empty `enterpriseId`) read their cycle quota from the enterprise billing endpoint, and the card shows an "enterprise quota" row with the cycle reset time.
 
 
-- **Multi-account rotation (since v0.6.0)**: each version can hold several accounts at once, and requests rotate between them automatically. When an account is rate limited (429), out of quota (402), or has an expired sign-in (401), the request is **retried on another account in the pool**, so the conversation does not break. Each healthy account is tried at most once per request — never an unbounded retry loop.
+- **Multi-account rotation**: each version can hold several accounts at once, and requests rotate between them automatically. When an account is rate limited (429), out of quota (402), or has an expired sign-in (401), the request is **retried on another account in the pool**, so the conversation does not break. Each healthy account is tried at most once per request — never an unbounded retry loop.
 
   A limited account is set aside, and the card says when it returns — in hours when that is the honest unit. **That time comes from the upstream**, which states the moment the allowance resets in its 429 body (for example "your usage will reset at 2026-09-13 21:50:51 UTC+8"). A schedule the server already knows beats one this plugin would invent, and the plugin's own backoff (a minute, doubling, capped at fifteen for a rate limit; an hour, capped at a day, for exhausted quota) applies only when the upstream says nothing.
 
@@ -178,32 +178,20 @@ For models without declared levels, Web and Desktop instead use user-authorized,
 
 Prerequisite: the WorkBuddy desktop app is installed and signed in. The plugin reuses the app's sign-in state and follows account switches automatically; the same applies to the international WorkBuddy AI app, and the two do not affect each other.
 
-**Match the plugin version to your DSH core** — from **`0.13.0`** the plugin targets DSH `0.1.7-alpha.1` and up only (the dashboard UI uses 0.1.7 slot contracts and its `volatile` config write-back); earlier plugin releases still pair one-to-one with the older cores, and a mismatched combination fails to start DSH:
+**Match the plugin version to your DSH core** — this repository ships **`0.13.0` only**, and it targets DSH `0.1.7-alpha.1` and up: the UI is a sidebar card, a centre-column dashboard and a settings section, built on 0.1.7's slot contracts and its `volatile` config write-back. A mismatched core fails to start DSH.
 
 | Plugin | Required DSH core | Desktop app |
 |---|---|---|
 | **0.13.0 (dashboard UI)** | `0.1.7-alpha.1` and up (the plugin depends on 0.1.7's slot and settings mechanisms). **Newer prereleases (e.g. `0.1.8-alpha.x`) are NOT covered automatically** — the plugin must extend its peer range first | desktop builds bundling `0.1.7+` |
-| **0.3.2 – 0.5.4** (international support since `0.5.0`) | the `0.1.5-rc.1` line only (no `0.1.6+`; see [#41](https://github.com/corrinehu/dsh-workbuddy-connect/issues/41)) | `2.0.7`+ (bundled core `0.1.5-rc.1`) |
-| **0.3.0 – 0.3.1** | `0.1.2-rc.1` | `2.0.5` |
-| **0.2.6** | `0.1.1-rc.2` (older line) | `2.0.3` / `2.0.4` |
 
-- **`0.13.0` requires DSH `0.1.7-alpha.1` or newer**: the UI registers through 0.1.7 slot contracts (sidebar foot, centre panel, settings section) and depends on 0.1.7's `volatile` config write-back, so `0.1.5` / `0.1.6` are no longer supported.
-- **Where the cards live depends on the DSH version** — each generation has its own place:
+> **Do not install from npm.** The `dsh-workbuddy-connect` package on npm is the upstream author's older build (latest `0.6.3`, which requires DSH `0.1.5-rc.1`); it is a different code line from this repository's `0.13.0`, and installing it on a `0.1.7` core stops DSH from starting. Use the GitHub command below.
+
+- **Where the cards live** (0.13.0):
 
   ```text
-  DSH 0.1.5 + this plugin
+  DSH 0.1.7+ + this plugin
   ├─ Settings → Models
-  │   └─ no WorkBuddy rows ← unified with 0.1.6+ (only plugins ≤0.5.4 still showed those old
-  │                            configurable-provider rows)
-  ├─ Settings → Plugins
-  │   ├─ DSH WorkBuddy Connect      ✅ config card (CN)
-  │   └─ DSH WorkBuddy AI Connect   ✅ config card (international)
-  └─ chat model picker
-      └─ WorkBuddy / WorkBuddy AI groups ✅
-
-  DSH 0.1.6+ + this plugin
-  ├─ Settings → Models
-  │   └─ no WorkBuddy rows          ← intentional, consistent across both generations
+  │   └─ no WorkBuddy rows          ← intentional
   ├─ Settings → Built-in Plugins
   │   └─ workbuddy-connect          ← read-only inventory (runtime status), no config entry
   ├─ sidebar foot                    ✅ WorkBuddy card → opens the centre-column dashboard
@@ -214,34 +202,28 @@ Prerequisite: the WorkBuddy desktop app is installed and signed in. The plugin r
   ```
 
 - The Models settings page does not show the non-editable WorkBuddy / WorkBuddy AI cards; the model picker, `/model`, and chat calls are unaffected.
-- On DSH `0.1.7` and up, just install the latest: `dsh plugin --profile web add dsh-workbuddy-connect`
-- Still on DSH `0.1.2-rc.1`? Stay on `0.3.1`: `dsh plugin --profile web add dsh-workbuddy-connect@0.3.1`
-- Still on DSH `0.1.1-rc.2`? Stay on the older release: `dsh plugin --profile web add dsh-workbuddy-connect@0.2.6`
-- The desktop app has bundled `0.1.5-rc.1` since `2.0.7`, so it can use the latest plugin directly; `2.0.5` and earlier apps (bundled `0.1.2-rc.1`) should stay on `0.3.1`
 
 The plugin runs under all three DSH interfaces: **Web**, **Desktop**, and **TUI**. Pick the install command that matches the profile you use.
 
 ```sh
-# Web (recommended; ships prebuilt artifacts)
-dsh plugin --profile web add dsh-workbuddy-connect
-dsh web
-
-# or install the Web version from the GitHub source
-dsh plugin --profile web add github:corrinehu/dsh-workbuddy-connect
+# Web (recommended; the repository ships prebuilt artifacts)
+dsh plugin --profile web add github:functy23/dsh-workbuddy-connect
 dsh web
 ```
 
 ```sh
 # Desktop (the DSH Desktop app)
-dsh plugin --profile desktop add dsh-workbuddy-connect
+dsh plugin --profile desktop add github:functy23/dsh-workbuddy-connect
 dsh --profile desktop
 ```
 
 ```sh
 # TUI (terminal UI)
-dsh plugin --profile dsh-tui add dsh-workbuddy-connect
+dsh plugin --profile dsh-tui add github:functy23/dsh-workbuddy-connect
 dsh --profile dsh-tui
 ```
+
+> A `github:` install takes the `lib/` already built into the repository (`package.json`'s `prepack` does not run for git installs), so it builds nothing locally and needs no devDependencies.
 
 > **TUI users, check the version pairing**: the terminal UI package (`@deepseek-harness-tui/dsh-tui`) must be **`0.10.0-beta.5` or newer** — older versions fail at startup with `events is not iterable` when this plugin is installed. Update the shell first (via its built-in update command or a fresh install), then add this plugin; the newest release is a beta, and a stable one will work the same way.
 
@@ -272,7 +254,7 @@ The sidebar's two display preferences (whether the card is drawn, and how it sta
 
 ## Known limitations
 
-- Verified on macOS with the DSH Web / Desktop / TUI profiles (as of 0.3.2 this requires `0.1.5-rc.1`+ and Node 22+; TUI requires the terminal UI package `0.10.0-beta.5` or newer — see the Install section). Windows probes Local and Roaming AppData in order; WSL first reads credentials from the mounted Windows user profile. If the Windows and Linux user names differ and Windows environment variables are not forwarded into WSL, point `WORKBUDDY_AUTH_FILE` (or `WORKBUDDY_AI_AUTH_FILE` for the international version) at the actual file.
+- Verified on macOS with the DSH Web / Desktop / TUI profiles (this requires DSH `0.1.7-alpha.1`+ and Node 22+; TUI requires the terminal UI package `0.10.0-beta.5` or newer — see the Install section). Windows probes Local and Roaming AppData in order; WSL first reads credentials from the mounted Windows user profile. If the Windows and Linux user names differ and Windows environment variables are not forwarded into WSL, point `WORKBUDDY_AUTH_FILE` (or `WORKBUDDY_AI_AUTH_FILE` for the international version) at the actual file.
 - **The sidebar's two display preferences need a host that can write settings**: when the status document carries no `sidebarCreditVisible` / `sidebarCreditStyle`, the settings page draws no control for it — a switch that could not be saved is worse than none. With the card switched off, the dashboard's way in moves to the same settings group.
 - **The international version's model catalog comes from the app's own interface**: the service splits it by User-Agent, which is a private implementation detail that a server-side change can break. When that happens the plugin degrades to this account's last successful catalog and then to its built-in roster, showing the source (live / saved / built-in), the fetch time, and the failure reason on the card — but long-term compatibility is not guaranteed. The CN version's catalog uses the same interface as the official CLI and is unaffected.
 - **International-version environments not yet covered**: on Windows / WSL / Linux no reliable source for the international app's version has been located yet, so the saved value or the built-in default is used. On macOS, real-shim checks covered complete GPT-family replies, tool calls, and continued turns.

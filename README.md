@@ -1,8 +1,8 @@
 # DSH WorkBuddy Connect
 
 
-[![npm version](https://img.shields.io/npm/v/dsh-workbuddy-connect)](https://www.npmjs.com/package/dsh-workbuddy-connect)
-[![GitHub stars](https://img.shields.io/github/stars/corrinehu/dsh-workbuddy-connect)](https://github.com/corrinehu/dsh-workbuddy-connect)
+[![version](https://img.shields.io/badge/version-0.13.0-blue)](https://github.com/functy23/dsh-workbuddy-connect/blob/main/package.json)
+[![GitHub stars](https://img.shields.io/github/stars/functy23/dsh-workbuddy-connect)](https://github.com/functy23/dsh-workbuddy-connect)
 [![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 [![DSH core](https://img.shields.io/badge/DSH-0.1.7--alpha.1%2B-blueviolet)](https://github.com/deepseek-ai/deepseek-harness)
 
@@ -12,7 +12,7 @@
 
 将 WorkBuddy 桌面 App 中包含的各种模型（GLM-5.3、GLM-5.2、DeepSeek-V4-Pro、DeepSeek-V4-Flash、Kimi-K3、MiniMax-M3 、Hy3等）自动接入 DeepSeek Harness，实现在 DSH 对话窗口里零配置使用。
 
-国内版 **WorkBuddy** 与国际版 **WorkBuddy AI** 同时支持（国际版自 **v0.5.0** 起）：装哪个 App 就出现哪个模型分组，两个都装就两组并存，各自用自己的账号与积分。
+国内版 **WorkBuddy** 与国际版 **WorkBuddy AI** 同时支持：装哪个 App 就出现哪个模型分组，两个都装就两组并存，各自用自己的账号与积分。
 
 
 ## 功能
@@ -49,7 +49,7 @@
 - **企业账号积分**：国内版企业账号（`enterpriseId` 非空）走企业专用计费接口读取周期额度，卡片显示「企业额度」与周期重置时间。
 
 
-- **多账号轮换（自 v0.6.0 起）**：同一版本可以同时保存多个账号，请求会在它们之间自动轮换。某个账号被上游限流（429）、额度耗尽（402）或登录失效（401）时，会**自动换到池中另一个账号重试**，当前对话不会因此中断。每个健康账号每轮最多尝试一次，不会无限重试。
+- **多账号轮换**：同一版本可以同时保存多个账号，请求会在它们之间自动轮换。某个账号被上游限流（429）、额度耗尽（402）或登录失效（401）时，会**自动换到池中另一个账号重试**，当前对话不会因此中断。每个健康账号每轮最多尝试一次，不会无限重试。
 
   被限流的账号会被**暂时搁置**，并在卡片上显示恢复时间（如「限流中 · 3 小时后重试」）。
 
@@ -181,31 +181,20 @@ WorkBuddy 中模型的推理档位信息目前分散在上游接口与客户端�
 
 前置：已安装并登录 WorkBuddy 桌面 App。插件复用 App 的登录状态，账号切换自动跟随；装了国际版 WorkBuddy AI 的同样适用，两版互不影响。
 
-**版本对应（重要）**：**`0.13.0` 起只面向 DSH `0.1.7-alpha.1` 及以上**：界面重写为侧栏卡片 + 中栏仪表盘 + 设置分区页，用的是 0.1.7 的 slot 与设置机制，不再兼容 `0.1.5` / `0.1.6` 核心。更早的插件版本仍与旧核心一一对应，不可混用——不匹配的组合会导致 DSH 启动失败：
+**版本对应（重要）**：本仓库只发布 `0.13.0`，**只面向 DSH `0.1.7-alpha.1` 及以上**：界面是侧栏卡片 + 中栏仪表盘 + 设置分区页，用的是 0.1.7 的 slot 与设置机制。核心不匹配会导致 DSH 启动失败。
 
 | 插件版本 | 要求的 DSH 核心 | 桌面 App |
 |---|---|---|
 | **0.13.0（仪表盘界面）** | `0.1.7-alpha.1` 及以上（插件依赖 0.1.7 的 slot 与设置机制）。**更新的 prerelease（如 `0.1.8-alpha.x`）不自动覆盖**，需插件显式跟进 peer range 后才支持 | 搭载 `0.1.7+` 核心的桌面版 |
-| **0.3.2 – 0.5.4**（国际版支持自 `0.5.0`） | `0.1.5-rc.1` 系列（不支持 `0.1.6+`，见 [#41](https://github.com/corrinehu/dsh-workbuddy-connect/issues/41)） | `2.0.7`+（内置核心已跟进 `0.1.5-rc.1`） |
-| **0.3.0 – 0.3.1** | `0.1.2-rc.1` | `2.0.5` |
-| **0.2.6** | `0.1.1-rc.2`（旧线） | `2.0.3` / `2.0.4` |
 
-- **`0.13.0` 需要 DSH `0.1.7-alpha.1` 及以上**：界面通过 0.1.7 的 slot 契约接入（侧栏底部、中栏面板、设置分区），并依赖 0.1.7 的 `volatile` 配置写回机制，因此不再适配 `0.1.5` / `0.1.6`。
-- **配置入口随 DSH 版本不同**，两代各就各位：
+> **不要从 npm 装。** npm 上的 `dsh-workbuddy-connect` 是上游作者的旧版本（最新 `0.6.3`，只支持 DSH `0.1.5-rc.1`），与本仓库的 `0.13.0` 不是同一个代码线，装到 `0.1.7` 核心上会让 DSH 起不来。请用下面的 GitHub 命令安装。
+
+- **配置入口**（0.13.0）：
 
   ```text
-  DSH 0.1.5 + 本插件
+  DSH 0.1.7+ + 本插件
   ├─ 设置 → 模型
-  │   └─ 不显示 WorkBuddy 两行 ← 与 0.1.6+ 统一（≤0.5.4 旧版插件才显示那两行旧 configurable-provider 条目）
-  ├─ 设置 → 插件
-  │   ├─ DSH WorkBuddy Connect      ✅ 配置卡片（国内版）
-  │   └─ DSH WorkBuddy AI Connect   ✅ 配置卡片（国际版）
-  └─ 聊天模型选择器
-      └─ WorkBuddy / WorkBuddy AI 分组 ✅
-
-  DSH 0.1.6+ + 本插件
-  ├─ 设置 → 模型
-  │   └─ 不显示 WorkBuddy 两行      ← 有意如此，两代行为统一
+  │   └─ 不显示 WorkBuddy 两行      ← 有意如此
   ├─ 设置 → 内置插件
   │   └─ workbuddy-connect          ← 只读清单（运行状态），无配置入口，别找错地方
   ├─ 左侧栏底部                     ✅ WorkBuddy 卡片 → 点开中栏仪表盘（可在设置里关掉）
@@ -215,34 +204,28 @@ WorkBuddy 中模型的推理档位信息目前分散在上游接口与客户端�
   ```
 
 - Models 设置页不显示 WorkBuddy / WorkBuddy AI 的不可编辑卡片；模型选择器、`/model` 与对话调用不受影响。
-- DSH `0.1.7` 及以上的用户，安装最新版即可：`dsh plugin --profile web add dsh-workbuddy-connect`
-- 还在用 DSH `0.1.2-rc.1` 的用户，请停留在 `0.3.1`：`dsh plugin --profile web add dsh-workbuddy-connect@0.3.1`
-- 还在用 DSH `0.1.1-rc.2` 的用户，请停留在 `0.2.6`：`dsh plugin --profile web add dsh-workbuddy-connect@0.2.6`
-- 桌面 App 自 `2.0.7` 起内置核心已是 `0.1.5-rc.1`，可直接使用最新版插件；`2.0.5` 及更早的 App（内置 `0.1.2-rc.1`）请继续使用 `0.3.1`
 
 插件在三种 DSH 界面下均可运行：**Web**、**Desktop**、**TUI**。根据你使用的 profile 选对应命令安装。
 
 ```sh
-# Web（推荐，自带预构建产物）
-dsh plugin --profile web add dsh-workbuddy-connect
-dsh web
-
-# 或从 GitHub 源码安装 Web 版
-dsh plugin --profile web add github:corrinehu/dsh-workbuddy-connect
+# Web（推荐；仓库自带预构建产物，装完即用）
+dsh plugin --profile web add github:functy23/dsh-workbuddy-connect
 dsh web
 ```
 
 ```sh
 # Desktop（DSH Desktop 桌面版）
-dsh plugin --profile desktop add dsh-workbuddy-connect
+dsh plugin --profile desktop add github:functy23/dsh-workbuddy-connect
 dsh --profile desktop
 ```
 
 ```sh
 # TUI（终端界面）
-dsh plugin --profile dsh-tui add dsh-workbuddy-connect
+dsh plugin --profile dsh-tui add github:functy23/dsh-workbuddy-connect
 dsh --profile dsh-tui
 ```
+
+> `github:` 安装直接取仓库里已构建好的 `lib/`（`package.json` 的 `prepack` 不会在 git 安装时执行），所以**不会**在本地跑构建，也不需要 devDependencies。
 
 > **TUI 用户请注意版本搭配**：终端界面插件 `@deepseek-harness-tui/dsh-tui` 需要 **`0.10.0-beta.5` 及以上**（更早的版本装了本插件会启动失败，报 `events is not iterable`）。请先用 TUI 自带的更新方式把壳升到 beta.5 及以上，再安装本插件；当前最新的是 beta 版，正式版发布后同样可用。
 
@@ -273,7 +256,7 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 
 ## 已知限制
 
-- 在 macOS 的 DSH Web / Desktop / TUI 下验证通过（0.3.2 起要求 `0.1.5-rc.1`+、Node 22+；TUI 需终端界面插件 `0.10.0-beta.5` 及以上，见安装章节说明）。Windows 会依次探测 Local 与 Roaming AppData；WSL 会优先从挂载的 Windows 用户目录读取登录凭据。若 Windows 与 Linux 用户名不同且 Windows 环境变量未传入 WSL，请通过 `WORKBUDDY_AUTH_FILE`（国际版为 `WORKBUDDY_AI_AUTH_FILE`）指定实际位置。
+- 在 macOS 的 DSH Web / Desktop / TUI 下验证通过（要求 DSH `0.1.7-alpha.1`+、Node 22+；TUI 需终端界面插件 `0.10.0-beta.5` 及以上，见安装章节说明）。Windows 会依次探测 Local 与 Roaming AppData；WSL 会优先从挂载的 Windows 用户目录读取登录凭据。若 Windows 与 Linux 用户名不同且 Windows 环境变量未传入 WSL，请通过 `WORKBUDDY_AUTH_FILE`（国际版为 `WORKBUDDY_AI_AUTH_FILE`）指定实际位置。
 - **侧边栏的两个显示偏好依赖宿主能写入设置**：状态文档里没有 `sidebarCreditVisible` / `sidebarCreditStyle` 时，设置页不画对应的控件——给一个存不下去的开关比不给更糟。关掉卡片后，仪表盘的入口改在设置页的同一组里。
 - **国际版的模型目录来自 App 界面接口**：服务端按 User-Agent 分流下发，属私有实现，上游改动可能使其失效。届时插件按「本账号上次成功目录 → 内置目录」降级，并在卡片上标明来源（实时 / 已保存 / 内置）、更新时间与失败原因，但不能保证长期兼容。国内版目录走官方 CLI 同款接口，不受此影响。
 - **国际版仍未覆盖的环境**：Windows / WSL / Linux 下国际版 App 的版本读取尚未找到可靠来源，会退回最近保存的版本或内置值。macOS 上已通过真实 shim 验证 GPT 系完整回复、工具调用与续轮。
