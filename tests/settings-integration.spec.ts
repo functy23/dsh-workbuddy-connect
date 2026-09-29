@@ -423,4 +423,115 @@ describe('WorkBuddy Host settings integration', () => {
       expect((await ctx.llm.listModels('workbuddy-ai')).length).toBeGreaterThan(0)
     })
   })
+
+  /**
+   * The image half of the attachment contract (issue #52): the handle text a
+   * model is told to `read_image` must carry the path the host fs can re-read,
+   * and a host with no fs service must keep the short handle rather than fail.
+   * Driven through the real plugin entry so a forgotten wiring in `index.ts`
+   * fails here, not only in a live session.
+   */
+  it('wires image access through the optional fs service in both variants (issue #52)', async () => {
+    root = await mkdtemp(join(tmpdir(), 'dsh-workbuddy-connect-image-access-'))
+    vi.stubEnv('DSH_HOME', root)
+    const cnFile = join(root, 'cn.info')
+    const aiFile = join(root, 'ai.info')
+    await writeFile(cnFile, credentialDocument('copilot.tencent.com'))
+    await writeFile(aiFile, credentialDocument('www.workbuddy.ai', 'uid-ai'))
+    vi.stubEnv('WORKBUDDY_AUTH_FILE', cnFile)
+    vi.stubEnv('WORKBUDDY_AI_AUTH_FILE', aiFile)
+
+    const hostPath = 'C:\\Users\\Corrine Hu\\图片\\原图.png'
+    const image = { attachmentId: 'sha256:test', mediaType: 'image/png', bytes: 3, width: 1, height: 1 }
+    const attachmentStore = {
+      imageHostPath: () => hostPath,
+      readImageRequest: async () => ({
+        variantId: 'variant' as never,
+        attachment: image,
+        data: new Uint8Array([1, 2, 3]),
+        mediaType: 'image/png',
+        bytes: 3,
+        width: 1,
+        height: 1,
+        depth: 'uchar',
+        space: 'srgb',
+        hasAlpha: false,
+      }),
+    }
+    const sentBodies: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        sentBodies.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+        return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
+      }
+      throw new Error('offline in tests')
+    }))
+
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(FakeSettingsService)
+    const settings = FakeSettingsService.current as FakeSettingsService
+    settings.declareEntry(ENTRY, {}, SCHEMA)
+    ctx.provide('attachments', attachmentStore as never)
+    const fiber = ctx.plugin(WorkBuddy, {})
+    await fiber
+    settings.bindFiber(ENTRY, fiber.config)
+
+    await vi.waitFor(() => {
+      expect(ctx.llm.listProviders().map(provider => provider.id))
+        .toEqual(expect.arrayContaining(['workbuddy', 'workbuddy-ai']))
+    })
+
+    const imageMessage = (offloaded = false) => ({
+      id: 'image-test' as never,
+      role: 'user' as const,
+      source: { kind: 'user' as const },
+      content: [
+        { type: 'text' as const, text: 'describe' },
+        { type: 'image' as const, attachment: image, ...(offloaded ? { offloaded: true as const } : {}) },
+      ],
+    } as never)
+    const textFromRequest = (body: Record<string, unknown> | undefined): string => {
+      const messages = body?.['messages'] as { content?: string | { text?: string }[] }[] | undefined
+      return messages?.map(item => typeof item.content === 'string'
+        ? item.content
+        : item.content?.map(block => block.text ?? '').join('\n') ?? '').join('\n') ?? ''
+    }
+    const sendImage = async (provider: string, offloaded = false): Promise<void> => {
+      for await (const _chunk of ctx.llm.stream({
+        provider,
+        model: 'glm-5.3',
+        messages: [imageMessage(offloaded)],
+      })) {
+        // The captured HTTP request is the assertion boundary.
+      }
+    }
+
+    // Without an fs service the handle keeps its short form, and the bytes
+    // still travel — a host that maps no paths must not lose the image.
+    await sendImage('workbuddy')
+    expect(textFromRequest(sentBodies[0])).not.toContain('Normalized copy (read-only;')
+    expect(JSON.stringify(sentBodies[0])).toContain('data:image/png;base64,AQID')
+
+    let mappedPath = 'Z:\\WorkBuddy Data\\模型工具\\图像.png'
+    ctx.provide('fs', {
+      processPathFromHostPath: (path: string) => path === hostPath ? mappedPath : undefined,
+    } as never)
+    await sendImage('workbuddy')
+    expect(textFromRequest(sentBodies[1])).toContain(JSON.stringify(mappedPath))
+    expect(JSON.stringify(sentBodies[1])).toContain('data:image/png;base64,AQID')
+
+    // The international variant shares the wiring, and the host path itself
+    // never reaches the model.
+    await sendImage('workbuddy-ai')
+    const aiText = textFromRequest(sentBodies[2])
+    expect(aiText).toContain(JSON.stringify(mappedPath))
+    expect(aiText).not.toContain(hostPath)
+
+    // The mapping is consulted per request, so a later change is picked up.
+    mappedPath = 'Z:\\new mapping.png'
+    await sendImage('workbuddy-ai')
+    expect(textFromRequest(sentBodies[3])).toContain(JSON.stringify(mappedPath))
+  })
 })

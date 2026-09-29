@@ -313,3 +313,106 @@ describe('WorkBuddy shim', () => {
     expect(harness.upstreamBodies).toHaveLength(0)
   })
 })
+
+describe('error text policy against the host AUTH heuristic (PR #58)', () => {
+  /**
+   * The host adapter (dsh-llm-pi-ai's classifyPiAiError) treats any error
+   * text matching /\b(?:401|403)\b/ as an auth failure and the UI replaces
+   * the message with an invalid-API-key banner. This pin mirrors that regex
+   * so the texts this shim emits stay compatible with it: business errors
+   * must not match, session failures must. If the host ever changes its
+   * heuristic, update this mirror with it.
+   */
+  const HOST_AUTH_HEURISTIC = /\b(?:401|403)\b/u
+
+  async function shimErrorBody(upstream: () => WorkBuddyChatResult): Promise<string> {
+    const harness = await startShim(upstream)
+    const response = await fetch(`${harness.shim.baseUrl()}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', authorization: `Bearer ${harness.shim.token()}` },
+      body: JSON.stringify({ model: 'hy3', messages: [] }),
+    })
+    expect(response.ok).toBe(false)
+    return await response.text()
+  }
+
+  it('shows the display message of a review rejection without a bare 403', async () => {
+    const text = await shimErrorBody(() => ({
+      ok: false,
+      status: 403,
+      kind: 'client',
+      message: JSON.stringify({
+        code: 11140,
+        msg: 'request illegal',
+        displayMsg: { zh: '内容未通过安全审核，请调整后重试。', en: 'The content did not pass the safety review.' },
+      }),
+    }))
+    const body = JSON.parse(text) as { error: { message: string } }
+    expect(body.error.message).toBe('workbuddy upstream client: 内容未通过安全审核，请调整后重试。')
+    expect(HOST_AUTH_HEURISTIC.test(body.error.message)).toBe(false)
+  })
+
+  it('falls back to msg and keeps the status note for non-401/403 statuses', async () => {
+    const text = await shimErrorBody(() => ({
+      ok: false,
+      status: 400,
+      kind: 'client',
+      message: JSON.stringify({ code: 11128, msg: 'Illegal API invocation from an unapproved channel' }),
+    }))
+    const body = JSON.parse(text) as { error: { message: string } }
+    expect(body.error.message).toBe('workbuddy upstream client (http 400): Illegal API invocation from an unapproved channel')
+  })
+
+  it('keeps the 401 note for a marked dead session', async () => {
+    const text = await shimErrorBody(() => ({
+      ok: false,
+      status: 401,
+      kind: 'session_dead',
+      message: 'Offline user session not found',
+    }))
+    const body = JSON.parse(text) as { error: { message: string } }
+    expect(body.error.message).toContain('(http 401)')
+    expect(HOST_AUTH_HEURISTIC.test(body.error.message)).toBe(true)
+  })
+
+  it('keeps the 401 note for a markerless 401, which classifies as session_dead', async () => {
+    const text = await shimErrorBody(() => ({
+      ok: false,
+      status: 401,
+      kind: 'session_dead',
+      message: 'unauthorized in some novel wording',
+    }))
+    const body = JSON.parse(text) as { error: { message: string } }
+    expect(body.error.message).toBe('workbuddy upstream session_dead (http 401): unauthorized in some novel wording')
+    expect(HOST_AUTH_HEURISTIC.test(body.error.message)).toBe(true)
+  })
+
+  it('keeps an extracted display text that itself names 403, accepting the residue', async () => {
+    // Known residue, pinned on purpose: when the upstream display text
+    // itself contains the number ("HTTP 403: 受限"), the real text wins over
+    // hiding the digits, and the host heuristic will still read it as AUTH.
+    // Rewriting the digits would destroy genuine information; the fix for
+    // this class belongs in the host's classifier, not here.
+    const text = await shimErrorBody(() => ({
+      ok: false,
+      status: 403,
+      kind: 'client',
+      message: JSON.stringify({ code: 11140, msg: 'request illegal', displayMsg: { zh: 'HTTP 403：访问受限，请稍后重试' } }),
+    }))
+    const body = JSON.parse(text) as { error: { message: string } }
+    expect(body.error.message).toBe('workbuddy upstream client: HTTP 403：访问受限，请稍后重试')
+    expect(HOST_AUTH_HEURISTIC.test(body.error.message)).toBe(true)
+  })
+
+  it('hides the bare 403 from a markerless 403 business error even in raw fallback', async () => {
+    const text = await shimErrorBody(() => ({
+      ok: false,
+      status: 403,
+      kind: 'client',
+      message: 'plain text refusal without json',
+    }))
+    const body = JSON.parse(text) as { error: { message: string } }
+    expect(body.error.message).toBe('workbuddy upstream client: plain text refusal without json')
+    expect(HOST_AUTH_HEURISTIC.test(body.error.message)).toBe(false)
+  })
+})

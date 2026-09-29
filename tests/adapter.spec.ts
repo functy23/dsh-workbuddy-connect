@@ -1,9 +1,13 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { resolveImageAttachmentAccess } from '@deepseek-ai/dsh-llm'
 import { createWorkBuddyAdapter } from '../src/adapter.ts'
+import type { WorkBuddyAdapterOptions } from '../src/adapter.ts'
 import { WorkBuddyCatalog } from '../src/catalog.ts'
 import { WORKBUDDY_PROVIDER } from '../src/adapter.ts'
 import type { WorkBuddyCredentialStore } from '../src/auth.ts'
 import type { WorkBuddyShim } from '../src/shim.ts'
+
+afterEach(() => vi.unstubAllGlobals())
 
 /** The pi-ai collection built by an adapter exposes the exact model descriptor it consumes. */
 interface AdapterSnapshot {
@@ -89,7 +93,7 @@ describe('WorkBuddy adapter model descriptors', () => {
 
 describe('request-image contract across host generations', () => {
   /**
-   * The exact failure from docs/image-request-maxpixels-2026-09-23.md: a
+   * The exact failure observed on ≤0.1.5 hosts: a
    * link-installed plugin runs the pi-ai it was built with (0.1.6, which hands
    * `readImageRequest` a per-image target with no `maxPixels`) against a host
    * attachment service from ≤0.1.5 (which validates `maxPixels` and throws
@@ -106,12 +110,17 @@ describe('request-image contract across host generations', () => {
     ],
   }
 
-  function imageAdapter(store: Record<string, unknown>) {
+  function imageAdapter(
+    store: Record<string, unknown>,
+    providerId = WORKBUDDY_PROVIDER,
+    resolveImageAccess?: WorkBuddyAdapterOptions['resolveImageAccess'],
+  ) {
     const catalog = new WorkBuddyCatalog([{
       id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000, maxTokens: 128_000,
       supportsImages: true, billing: { free: false },
     }])
     return createWorkBuddyAdapter({
+      providerId,
       catalog,
       store: {} as WorkBuddyCredentialStore,
       shim: {
@@ -121,8 +130,145 @@ describe('request-image contract across host generations', () => {
         close: async () => {},
       } as WorkBuddyShim,
       resolveAttachments: () => store as never,
+      ...(resolveImageAccess === undefined ? {} : { resolveImageAccess }),
     }).adapter
   }
+
+  async function serializedImageBody(adapter: ReturnType<typeof imageAdapter>, provider: string, message: never = IMAGE_MESSAGE as never) {
+    let body: Record<string, unknown> | undefined
+    vi.stubGlobal('fetch', vi.fn(async (_input: unknown, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return new Response('data: [DONE]\n\n', {
+        headers: { 'content-type': 'text/event-stream' },
+      })
+    }))
+    const call = await adapter.prepareCall(provider, 'glm-5.3')
+    for await (const _chunk of call.stream({
+      provider,
+      model: 'glm-5.3',
+      messages: [message],
+    })) {
+      // The serialized request is the contract under test.
+    }
+    return body
+  }
+
+  function textFromRequest(body: Record<string, unknown> | undefined): string {
+    const messages = body?.['messages'] as { content?: string | { text?: string }[] }[] | undefined
+    return messages?.map(message => typeof message.content === 'string'
+      ? message.content
+      : message.content?.map(block => block.text ?? '').join('\n') ?? '').join('\n') ?? ''
+  }
+
+  it.each([WORKBUDDY_PROVIDER, 'workbuddy-ai'])('serializes mapped image access and keeps image bytes for %s', async provider => {
+    const hostPath = 'C:\\Users\\Corrine Hu\\图片\\原图.png'
+    const executionPath = 'Z:\\WorkBuddy Data\\模型工具\\图像 "1".png'
+    class PrivatePathAttachmentStore {
+      #hostPath = hostPath
+
+      imageHostPath() {
+        return this.#hostPath
+      }
+
+      async readImageRequest() {
+        return {
+        variantId: 'variant' as never,
+        attachment: IMAGE_MESSAGE.content[1]?.type === 'image' ? IMAGE_MESSAGE.content[1].attachment : undefined,
+        data: new Uint8Array([1, 2, 3]),
+        mediaType: 'image/png',
+        bytes: 3,
+        width: 1,
+        height: 1,
+        depth: 'uchar',
+        space: 'srgb',
+        hasAlpha: false,
+        } as never
+      }
+    }
+    const store = new PrivatePathAttachmentStore()
+    const adapter = imageAdapter(store as unknown as Record<string, unknown>, provider, (attachments, ref) => resolveImageAttachmentAccess(
+        attachments,
+        path => path === hostPath ? executionPath : undefined,
+        ref,
+      ))
+
+    const body = await serializedImageBody(adapter, provider)
+    const modelText = textFromRequest(body)
+    const serialized = JSON.stringify(body)
+    expect(modelText).toContain(JSON.stringify(executionPath))
+    expect(modelText).toContain('Normalized copy (read-only;')
+    expect(serialized).toContain('data:image/png;base64,AQID')
+    expect(modelText).not.toContain(hostPath)
+
+    const offloaded = {
+      ...IMAGE_MESSAGE,
+      content: [
+        IMAGE_MESSAGE.content[0],
+        { type: 'image' as const, attachment: IMAGE_MESSAGE.content[1]?.type === 'image' ? IMAGE_MESSAGE.content[1].attachment : undefined, offloaded: true as const },
+      ],
+    } as never
+    const offloadedBody = await serializedImageBody(adapter, provider, offloaded)
+    const offloadedText = textFromRequest(offloadedBody)
+    expect(offloadedText).toContain('image omitted to fit request image limits')
+    expect(offloadedText).toContain(JSON.stringify(executionPath))
+  })
+
+  it('propagates attachment path errors instead of hiding them', async () => {
+    const store = {
+      imageHostPath: () => { throw new Error('invalid image reference') },
+      readImageRequest: async () => ({
+        variantId: 'variant' as never,
+        attachment: IMAGE_MESSAGE.content[1]?.type === 'image' ? IMAGE_MESSAGE.content[1].attachment : undefined,
+        data: new Uint8Array([1, 2, 3]),
+        mediaType: 'image/png',
+        bytes: 3,
+        width: 1,
+        height: 1,
+        depth: 'uchar',
+        space: 'srgb',
+        hasAlpha: false,
+      }) as never,
+    }
+    const adapter = imageAdapter(store, WORKBUDDY_PROVIDER, (attachments, ref) =>
+      resolveImageAttachmentAccess(attachments, () => undefined, ref))
+    const call = await adapter.prepareCall(WORKBUDDY_PROVIDER, 'glm-5.3')
+    await expect(async () => {
+      for await (const _chunk of call.stream({
+        provider: WORKBUDDY_PROVIDER,
+        model: 'glm-5.3',
+        messages: [IMAGE_MESSAGE as never],
+      })) {
+        // The attachment failure occurs before the HTTP request.
+      }
+    }).rejects.toThrow('invalid image reference')
+  })
+
+  it('keeps the short handle when the attachment store offers no host path', async () => {
+    // Plan §5's second degradation row: the mapper never runs without a host
+    // path, so the request must keep the plain handle and the image bytes.
+    const store = {
+      imageHostPath: () => undefined,
+      readImageRequest: async () => ({
+        variantId: 'variant' as never,
+        attachment: IMAGE_MESSAGE.content[1]?.type === 'image' ? IMAGE_MESSAGE.content[1].attachment : undefined,
+        data: new Uint8Array([1, 2, 3]),
+        mediaType: 'image/png',
+        bytes: 3,
+        width: 1,
+        height: 1,
+        depth: 'uchar',
+        space: 'srgb',
+        hasAlpha: false,
+      }) as never,
+    }
+    const adapter = imageAdapter(store as unknown as Record<string, unknown>, WORKBUDDY_PROVIDER, (attachments, ref) =>
+      resolveImageAttachmentAccess(attachments, () => 'Z:\\would-be-mapping.png', ref))
+    const body = await serializedImageBody(adapter, WORKBUDDY_PROVIDER)
+    const modelText = textFromRequest(body)
+    expect(modelText).not.toContain('Normalized copy (read-only;')
+    expect(modelText).not.toContain('Z:\\would-be-mapping.png')
+    expect(JSON.stringify(body)).toContain('data:image/png;base64,AQID')
+  })
 
   it('fills the route pixel budget for a store that validates maxPixels (≤0.1.5 hosts)', async () => {
     let observed: unknown

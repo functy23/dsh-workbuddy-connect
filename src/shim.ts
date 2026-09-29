@@ -21,7 +21,7 @@ import { Readable } from 'node:stream'
 import type { WorkBuddyCredential } from './auth.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
-import { prepareChatBody, type UpstreamErrorKind, type WorkBuddyChatResult } from './upstream.ts'
+import { extractDisplayErrorMessage, prepareChatBody, type UpstreamErrorKind, type WorkBuddyChatResult } from './upstream.ts'
 import { type WorkBuddyRequestUsage } from './usage-store.ts'
 
 /** Minimal logger surface the plugin context already provides. */
@@ -281,12 +281,23 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       if (result.retryAfter !== undefined) res.setHeader('Retry-After', result.retryAfter)
       // A request that ran out of accounts is reported as a sign-in problem
       // rather than as an upstream refusal, because that is what it is.
+      const detail = extractDisplayErrorMessage(result.message) ?? result.message.slice(0, 400)
+      // The host adapter classifies any error text containing a bare 401/403
+      // word as AUTH, which would mask business errors (safety review, illegal
+      // request) behind an "invalid API key" banner. Only session failures keep
+      // the status note — every 401 classifies as session_dead, so genuine auth
+      // errors stay recognisable. Known residue: an extracted display text that
+      // itself names 403 still trips the host heuristic; the real text wins
+      // over hiding the number.
+      const statusNote = (result.status === 401 || result.status === 403) && result.kind !== 'session_dead'
+        ? ''
+        : ` (http ${result.status})`
       const type = status === 401 ? 'not_signed_in' : result.kind
       writeOpenAIError(
         res,
         status,
         type,
-        `workbuddy upstream ${result.kind} (http ${result.status}): ${result.message.slice(0, 400)}`,
+        `workbuddy upstream ${result.kind}${statusNote}: ${detail}`,
       )
       return
     }

@@ -1,174 +1,10 @@
 import z from "@deepseek-ai/schemastery";
 import "@earendil-works/pi-ai";
-import { PiAiAdapter } from "@deepseek-ai/dsh-llm-pi-ai";
+import { PiAiAdapter, PiAiAdapterOptions } from "@deepseek-ai/dsh-llm-pi-ai";
 import { IncomingMessage, ServerResponse } from "node:http";
 import { Context } from "@deepseek-ai/cordis";
 import { SettingsNamespace } from "@deepseek-ai/dsh-settings";
 import { AttachmentStore } from "@deepseek-ai/dsh-attachment";
-//#region src/desktop-credential-protection.d.ts
-/**
- * WorkBuddy 5.6.x at-rest credential protection: classification, key
- * resolution, and field decryption for the desktop app's encrypted auth file.
- *
- * Since WorkBuddy 5.6 the desktop app encrypts `auth.accessToken` and
- * `auth.refreshToken` at rest (`buildPolicy: "fields"`, on by default), so the
- * plugin reads `{$wbEncrypted:1, envelope}` wrappers instead of token strings
- * (issues #39/#40). Everything needed to open them lives on the same machine:
- *
- * - the sealed payload (`{version:1, atRestSecretKey}`) comes from the
- *   WorkBuddy-modified Electron's private `workbuddyStorage` binding, reached
- *   by running *its own* binary once with `ELECTRON_RUN_AS_NODE=1`;
- * - `protectorKey = sha256(atRestSecretKey, utf8)` opens the envelopes with
- *   AES-256-GCM; the AAD builder below is transcribed from the app's own
- *   `buildAuthenticatedContextAad` (transcribed and then verified live
- *   against the 5.6.2 bundle — see {@link workBuddyFieldAad}).
- *
- * The plugin process itself can never call `_linkedBinding` (it runs in DSH's
- * Node, not the forked Electron), so the helper is spawned. The key is cached
- * in memory only, single-flight, and re-resolved when an envelope names a
- * different key id. Neither the payload, the key, nor any token is ever
- * logged; error messages carry sizes, ids, and exit codes only.
- *
- * @module dsh-workbuddy-connect/desktop-credential-protection
- */
-/** The four states a desktop auth document can be read as. */
-type DesktopAuthFormat = 'absent' | 'plaintext' | 'encrypted' | 'unrecognized';
-/** The spawned helper. Separated from the provider so tests can stand it in. */
-type WorkBuddyKeyPayloadSource = () => Promise<string>;
-/**
- * Which automatic discovery, if any, this provider may run when no explicit
- * binary is configured.
- *
- * `none` is the safe default: a provider that has not been told which product
- * it serves must not reach for another product's app. `macos-workbuddy` is the
- * CN line — the only one whose at-rest credentials and app layout have been
- * verified live — and resolves the platform default and then Spotlight.
- */
-type WorkBuddyElectronDiscovery = 'none' | 'macos-workbuddy';
-/** Seams the discovery flow runs through, so tests never spawn a process. */
-interface WorkBuddyDiscoveryTools {
-  /** Candidate `.app` bundles for the CN bundle id, or a throw for an unusable tool. */
-  findApps: (signal: AbortSignal) => Promise<readonly string[]>;
-  /**
-   * `CFBundleIdentifier` of a bundle, or `undefined` when the tool could not
-   * read it — which is "we could not check this candidate", never "it does not
-   * match". A successful read of a *different* id returns that id, and the
-   * caller excludes the candidate.
-   */
-  bundleIdentifier: (bundlePath: string, signal: AbortSignal) => Promise<string | undefined>;
-  /** Display version, best effort; `undefined` when unavailable. */
-  bundleVersion: (bundlePath: string, signal: AbortSignal) => Promise<string | undefined>;
-}
-/** Provider options. */
-interface WorkBuddyAtRestKeyProviderOptions {
-  /** Explicit Electron binary; overrides the platform default and env. */
-  electronPath?: string;
-  /** Helper timeout in milliseconds; default 10s. */
-  timeoutMs?: number;
-  /**
-   * Where the payload comes from. Defaults to spawning WorkBuddy's own
-   * Electron with `ELECTRON_RUN_AS_NODE=1`; tests supply a stand-in so no
-   * test ever touches the real binary or a real key. Supplying this replaces
-   * path *resolution* too, so tests about resolution use
-   * {@link spawnHelper} instead.
-   */
-  source?: WorkBuddyKeyPayloadSource;
-  /**
-   * Runs the helper at the resolved path. Distinct from {@link source}, which
-   * replaces the whole payload path: this seam keeps resolution — explicit
-   * config, platform default, discovery — real, so tests can exercise it
-   * without spawning anything.
-   */
-  spawnHelper?: (electronPath: string) => Promise<string>;
-  /**
-   * Automatic discovery budget; defaults to `'none'` (see
-   * {@link WorkBuddyElectronDiscovery}). Passed explicitly per variant at the
-   * composition root, never inferred from the environment.
-   */
-  discovery?: WorkBuddyElectronDiscovery;
-  /**
-   * Platform default binary, consulted only when `discovery` is enabled and no
-   * explicit path is configured. Injectable so tests can force the fallback
-   * branch without moving the real app; `null` means "no default here".
-   */
-  defaultElectronPath?: string | undefined;
-  /** Discovery subprocesses; injectable so tests never spawn. */
-  tools?: WorkBuddyDiscoveryTools;
-  /**
-   * Total budget for one discovery run, covering the search and every
-   * candidate check. Injectable so tests can exercise exhaustion without
-   * waiting out the production 10s.
-   */
-  discoveryBudgetMs?: number;
-}
-/**
- * In-memory protector-key resolver: one spawn per key id, single-flight, never
- * persisted. The cache is keyed by the id envelopes ask for, so an envelope
- * sealed under a rotated key triggers exactly one fresh resolution.
- */ declare class WorkBuddyAtRestKeyProvider {
-  /**
-   * The explicit binary, when one was configured. `undefined` here means "the
-   * caller did not name one", which is what lets discovery run — an explicit
-   * path that turns out to be unusable is an error, never a reason to look for
-   * a different app.
-   */
-  private readonly explicitPath;
-  private readonly defaultPath;
-  private readonly discovery;
-  private readonly tools;
-  private readonly discoveryBudgetMs;
-  private readonly timeoutMs;
-  private readonly source;
-  private readonly spawnHelper;
-  /**
-   * The path discovery settled on, cached only on success. A failure leaves
-   * this unset so the next attempt tries again — the user may install or move
-   * the app without restarting DSH.
-   */
-  private discoveredPath;
-  private cache;
-  private inflight;
-  constructor(options?: WorkBuddyAtRestKeyProviderOptions);
-  /**
-   * The binary the default helper would use, for diagnostics.
-   *
-   * Reports a *discovery result* once one exists, so diagnostics describe what
-   * would actually run rather than the default that was bypassed. Discovery
-   * itself stays in {@link resolveElectronPath}: this accessor never triggers a
-   * search (the constructor must remain I/O-free, and callers may ask before
-   * any resolution has happened).
-   */
-  helperPath(): string | undefined;
-  /**
-   * A protector key matching one of the requested envelope key ids. The first
-   * id the cache answers wins; otherwise one spawn resolves the current key,
-   * which must match a request — a mismatch means the envelopes were sealed by
-   * a different install than the one this machine now runs, and no key we can
-   * reach will open them.
-   */
-  protectorKeyFor(requested: readonly string[]): Promise<Buffer>;
-  private ingest;
-  /**
-   * The binary to spawn, or a diagnosable error saying why there is none.
-   *
-   * Order is the contract: an explicit path is used as-is and never falls back;
-   * discovery runs only for a provider that was configured for it, and only
-   * after the platform default has been tried and found unusable.
-   */
-  private resolveElectronPath;
-  /**
-   * Resolve the CN app through Spotlight, then prove each candidate's identity
-   * before it can be executed.
-   *
-   * The whole flow shares one budget: a hang in one candidate must not extend
-   * the wait for the others, and running out of budget is reported as an
-   * unfinished check rather than an absent app.
-   */
-  private discoverMacosApp;
-  private spawnPayload;
-  private spawnAt;
-}
-//#endregion
 //#region src/app-version.d.ts
 /** Basename of the saved version under `$DSH_HOME`. */
 declare const WORKBUDDY_APP_VERSION_FILENAME = ".workbuddy-ai-version.json";
@@ -811,6 +647,15 @@ interface WorkBuddyVariant {
   region: WorkBuddyRegion;
   /** Env var overriding the desktop auth-file location. */
   env: string;
+  /**
+   * How this product's Electron helper is identified and located.
+   *
+   * Optional for source compatibility: `WorkBuddyVariant` is a public type and
+   * existing callers construct their own descriptors without it. Resolution
+   * falls back to {@link electronProfileFor}, keyed by variant id — an
+   * unknown id stays on the CN profile, the store's other legacy default.
+   */
+  electron?: WorkBuddyElectronProduct;
   /** Basename of the desktop app's own auth file in the shared auth directory. */
   desktopFilename: string;
   /** Basename of the plugin-owned credential copy under `$DSH_HOME`. */
@@ -868,6 +713,39 @@ interface WorkBuddyVariant {
   /** Same-origin probe-control route consumed by this variant's card. */
   probePath: string;
 }
+/**
+ * How one product's Electron key helper is identified on each platform, and
+ * which env var names an explicit binary for it (issues #59/#60).
+ *
+ * The profile is the *only* place product identity enters helper resolution —
+ * never the discovery setting, which only says whether a platform may be
+ * searched at all: two products on the same platform differ by bundle id /
+ * registry name / exe basename, so a discovery that matches one can never
+ * legitimately execute the other's binary.
+ */
+interface WorkBuddyElectronProduct {
+  /** Product name for helper diagnostics and error copy, e.g. `WorkBuddy AI`. */
+  productName: string;
+  /** Env var naming an explicit Electron binary for this product alone. */
+  envVar: string;
+  /** macOS identity and default install layout, verified per product. */
+  macOS: {
+    bundleId: string;
+    defaultPath: string;
+  };
+  /**
+   * Windows identity from the uninstall registry and the exe it names.
+   * `defaultPathSegments` exists only where the default install location has
+   * been measured (CN); the international app has only been seen in
+   * user-chosen locations, so it stays registry-only — an unverified default
+   * is a guess, and guessing is how the wrong app gets executed.
+   */
+  windows: {
+    displayNamePattern: RegExp;
+    exeBasename: string;
+    defaultPathSegments?: readonly string[];
+  };
+}
 /** CN WorkBuddy first: the existing provider keeps its id, paths, and copy. */
 declare const WORKBUDDY_VARIANTS: readonly WorkBuddyVariant[];
 /** The CN variant; the plugin's long-standing default and compatibility anchor. */
@@ -876,6 +754,173 @@ declare const CN_VARIANT: WorkBuddyVariant;
 declare const AI_VARIANT: WorkBuddyVariant;
 /** Look up a variant by provider id. */
 declare function variantFor(id: string): WorkBuddyVariant | undefined;
+//#endregion
+//#region src/desktop-credential-protection.d.ts
+/** The four states a desktop auth document can be read as. */
+type DesktopAuthFormat = 'absent' | 'plaintext' | 'encrypted' | 'unrecognized';
+/** The spawned helper. Separated from the provider so tests can stand it in. */
+type WorkBuddyKeyPayloadSource = () => Promise<string>;
+/**
+ * Which automatic discovery, if any, this provider may run when no explicit
+ * binary is configured.
+ *
+ * The value says which *platform* may be searched, never which product: two
+ * products on the same platform are told apart by the product profile
+ * ({@link WorkBuddyElectronProduct} — bundle id, registry name, exe basename),
+ * so a search for one can never execute the other's binary. `none` remains the
+ * safe default for platforms without a verified layout (Linux today).
+ */
+type WorkBuddyElectronDiscovery = 'none' | 'macos-workbuddy' | 'windows-workbuddy';
+/** Seams the discovery flow runs through, so tests never spawn a process. */
+interface WorkBuddyDiscoveryTools {
+  /** Candidate `.app` bundles for the product's bundle id, or a throw for an unusable tool. */
+  findApps: (signal: AbortSignal) => Promise<readonly string[]>;
+  /**
+   * `CFBundleIdentifier` of a bundle, or `undefined` when the tool could not
+   * read it — which is "we could not check this candidate", never "it does not
+   * match". A successful read of a *different* id returns that id, and the
+   * caller excludes the candidate.
+   */
+  bundleIdentifier: (bundlePath: string, signal: AbortSignal) => Promise<string | undefined>;
+  /** Display version, best effort; `undefined` when unavailable. */
+  bundleVersion: (bundlePath: string, signal: AbortSignal) => Promise<string | undefined>;
+}
+/** Windows-only seam for querying one uninstall registry root. */
+interface WorkBuddyWindowsDiscoveryTools {
+  queryUninstallRoot: (root: string, signal: AbortSignal) => Promise<string>;
+}
+/** Provider options. */
+interface WorkBuddyAtRestKeyProviderOptions {
+  /**
+   * Which product's Electron this provider resolves. Required and the only
+   * source of product identity: it names the explicit-path env var, the bundle
+   * id / registry name / exe basename discovery must match, and the platform
+   * default. Without it the provider could not even decide which env var to
+   * read — the discovery setting alone cannot carry this (both products are
+   * `none` on Linux, yet each must read its own variable).
+   */
+  product: WorkBuddyElectronProduct;
+  /** Explicit Electron binary; overrides the platform default and env. */
+  electronPath?: string;
+  /** Helper timeout in milliseconds; default 10s. */
+  timeoutMs?: number;
+  /**
+   * Where the payload comes from. Defaults to spawning WorkBuddy's own
+   * Electron with `ELECTRON_RUN_AS_NODE=1`; tests supply a stand-in so no
+   * test ever touches the real binary or a real key. Supplying this replaces
+   * path *resolution* too, so tests about resolution use
+   * {@link spawnHelper} instead.
+   */
+  source?: WorkBuddyKeyPayloadSource;
+  /**
+   * Runs the helper at the resolved path. Distinct from {@link source}, which
+   * replaces the whole payload path: this seam keeps resolution — explicit
+   * config, platform default, discovery — real, so tests can exercise it
+   * without spawning anything.
+   */
+  spawnHelper?: (electronPath: string) => Promise<string>;
+  /**
+   * Automatic discovery budget; defaults to `'none'` (see
+   * {@link WorkBuddyElectronDiscovery}). Passed explicitly per variant at the
+   * composition root, never inferred from the environment.
+   */
+  discovery?: WorkBuddyElectronDiscovery;
+  /**
+   * Platform default binary, consulted only when `discovery` is enabled and no
+   * explicit path is configured. Injectable so tests can force the fallback
+   * branch without moving the real app; `null` means "no default here".
+   */
+  defaultElectronPath?: string | undefined;
+  /** Discovery subprocesses; injectable so tests never spawn. */
+  tools?: WorkBuddyDiscoveryTools;
+  /** Windows registry discovery subprocess; injectable so tests never spawn. */
+  windowsTools?: WorkBuddyWindowsDiscoveryTools;
+  /** Platform override for deterministic discovery tests. */
+  platform?: NodeJS.Platform;
+  /**
+   * Total budget for one discovery run, covering the search and every
+   * candidate check. Injectable so tests can exercise exhaustion without
+   * waiting out the production 10s.
+   */
+  discoveryBudgetMs?: number;
+}
+/**
+ * In-memory protector-key resolver: one spawn per key id, single-flight, never
+ * persisted. The cache is keyed by the id envelopes ask for, so an envelope
+ * sealed under a rotated key triggers exactly one fresh resolution.
+ */ declare class WorkBuddyAtRestKeyProvider {
+  /**
+   * The explicit binary, when one was configured. `undefined` here means "the
+   * caller did not name one", which is what lets discovery run — an explicit
+   * path that turns out to be unusable is an error, never a reason to look for
+   * a different app.
+   */
+  private readonly explicitPath;
+  private readonly product;
+  private readonly defaultPath;
+  private readonly discovery;
+  private readonly tools;
+  private readonly windowsTools;
+  private readonly platform;
+  private readonly discoveryBudgetMs;
+  private readonly timeoutMs;
+  private readonly source;
+  private readonly spawnHelper;
+  /**
+   * The path discovery settled on, cached only on success. A failure leaves
+   * this unset so the next attempt tries again — the user may install or move
+   * the app without restarting DSH.
+   */
+  private discoveredPath;
+  private cache;
+  private inflight;
+  constructor(options: WorkBuddyAtRestKeyProviderOptions);
+  /**
+   * The binary the default helper would use, for diagnostics.
+   *
+   * Reports a *discovery result* once one exists, so diagnostics describe what
+   * would actually run rather than the default that was bypassed. Discovery
+   * itself stays in {@link resolveElectronPath}: this accessor never triggers a
+   * search (the constructor must remain I/O-free, and callers may ask before
+   * any resolution has happened).
+   */
+  helperPath(): string | undefined;
+  /**
+   * A protector key matching one of the requested envelope key ids. The first
+   * id the cache answers wins; otherwise one spawn resolves the current key,
+   * which must match a request — a mismatch means the envelopes were sealed by
+   * a different install than the one this machine now runs, and no key we can
+   * reach will open them.
+   */
+  protectorKeyFor(requested: readonly string[]): Promise<Buffer>;
+  private ingest;
+  /**
+   * The binary to spawn, or a diagnosable error saying why there is none.
+   *
+   * Order is the contract: an explicit path is used as-is and never falls back;
+   * discovery runs only for a provider that was configured for it, and only
+   * after the platform default has been tried and found unusable.
+   */
+  private resolveElectronPath;
+  /**
+   * Resolve this product's app through Spotlight, then prove each candidate's
+   * identity before it can be executed.
+   *
+   * The whole flow shares one budget: a hang in one candidate must not extend
+   * the wait for the others, and running out of budget is reported as an
+   * unfinished check rather than an absent app.
+   */
+  private discoverMacosApp;
+  /**
+   * Resolve this product's app through Windows uninstall records. Registry
+   * entries provide hints, not trust: every DisplayIcon candidate must still
+   * be the product's Electron binary with the known Electron layout before
+   * execution.
+   */
+  private discoverWindowsApp;
+  private spawnPayload;
+  private spawnAt;
+}
 //#endregion
 //#region src/auth.d.ts
 /** Normalized WorkBuddy credential, timestamps in epoch milliseconds. */
@@ -1498,6 +1543,8 @@ interface WorkBuddyAdapterOptions {
   catalog: WorkBuddyCatalog;
   /** Resolve the durable attachment service at request time, when present. */
   resolveAttachments?: () => AttachmentStore | undefined;
+  /** Resolve one image's path in the current model-tool execution world. */
+  resolveImageAccess?: NonNullable<PiAiAdapterOptions['resolveImageAccess']>;
   /**
    * Look up a local probe observation for a model. Consulted only for rows the
    * upstream left undeclared; absent means declared-set-only behavior.

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WorkBuddyCredential } from '../src/auth.ts'
 import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
-import { normalizeCredits, parseModelCatalog, WorkBuddyUpstreamClient } from '../src/upstream.ts'
+import { classifyUpstreamError, extractDisplayErrorMessage, normalizeCredits, parseModelCatalog, WorkBuddyUpstreamClient } from '../src/upstream.ts'
 
 /**
  * Offline unit tests for WorkBuddyUpstreamClient, mocking the global `fetch`
@@ -662,5 +662,58 @@ describe('chatStream wire effort by region (issue #49)', () => {
       expect(await wireEffort(CREDENTIAL, effort)).toBe(effort)
       expect(await wireEffort(AI_CREDENTIAL, effort)).toBe(effort)
     }
+  })
+})
+
+describe('extractDisplayErrorMessage (PR #58)', () => {
+  it('extracts zh displayMsg from structured JSON', () => {
+    const raw = JSON.stringify({
+      code: 11140,
+      msg: 'request illegal',
+      displayMsg: {
+        zh: '内容未通过安全审核，请调整后重试。',
+        en: 'The content did not pass the safety review. Please adjust and retry.',
+      },
+    })
+    expect(extractDisplayErrorMessage(raw)).toBe('内容未通过安全审核，请调整后重试。')
+  })
+
+  it('falls back to en displayMsg when zh is missing', () => {
+    const raw = JSON.stringify({
+      code: 11140,
+      msg: 'request illegal',
+      displayMsg: { en: 'The content did not pass the safety review. Please adjust and retry.' },
+    })
+    expect(extractDisplayErrorMessage(raw)).toBe('The content did not pass the safety review. Please adjust and retry.')
+  })
+
+  it('falls back to msg when displayMsg is absent', () => {
+    const raw = JSON.stringify({ code: 11128, msg: 'Illegal API invocation from an unapproved channel' })
+    expect(extractDisplayErrorMessage(raw)).toBe('Illegal API invocation from an unapproved channel')
+  })
+
+  it('returns undefined for non-JSON or malformed bodies', () => {
+    expect(extractDisplayErrorMessage('502 Bad Gateway')).toBeUndefined()
+    expect(extractDisplayErrorMessage('')).toBeUndefined()
+    expect(extractDisplayErrorMessage('{ invalid json')).toBeUndefined()
+  })
+})
+
+describe('auth-failure classification beside the status-note policy (PR #58 review)', () => {
+  it('classifies every 401 as session_dead even without a body marker', () => {
+    // The status-note policy hides `401`/`403` from business errors; a bare
+    // 401 must therefore never fall through to `client`, or its error text
+    // would lose the AUTH signal the host keys on.
+    expect(classifyUpstreamError(401, 'whatever the body says')).toBe('session_dead')
+    expect(classifyUpstreamError(401, '')).toBe('session_dead')
+  })
+
+  it('still classifies a markerless 403 as a business error', () => {
+    expect(classifyUpstreamError(403, JSON.stringify({ code: 11140, msg: 'request illegal' }))).toBe('client')
+  })
+
+  it('still recognises dead sessions carried by markers on other statuses', () => {
+    expect(classifyUpstreamError(403, 'Offline user session not found')).toBe('session_dead')
+    expect(classifyUpstreamError(200, JSON.stringify({ code: 12153 }))).toBe('session_dead')
   })
 })

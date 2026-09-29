@@ -1,7 +1,7 @@
 # DSH WorkBuddy Connect
 
 
-[![version](https://img.shields.io/badge/version-0.13.1-blue)](https://github.com/functy23/dsh-workbuddy-connect/blob/main/package.json)
+[![version](https://img.shields.io/badge/version-0.13.2-blue)](https://github.com/functy23/dsh-workbuddy-connect/blob/main/package.json)
 [![GitHub stars](https://img.shields.io/github/stars/functy23/dsh-workbuddy-connect)](https://github.com/functy23/dsh-workbuddy-connect)
 [![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 [![DSH core](https://img.shields.io/badge/DSH-0.1.7%20%7C%200.2.0--rc.2-blueviolet)](https://github.com/deepseek-ai/deepseek-harness)
@@ -178,19 +178,20 @@ For models without declared levels, Web and Desktop instead use user-authorized,
 
 Prerequisite: the WorkBuddy desktop app is installed and signed in. The plugin reuses the app's sign-in state and follows account switches automatically; the same applies to the international WorkBuddy AI app, and the two do not affect each other.
 
-**Match the plugin version to your DSH core** — this repository now ships **`0.13.1`**, and it targets **both DSH `0.1.7-alpha.1` and `0.2.0-rc.2`**: the UI is still a sidebar card, a centre-column dashboard and a settings section, built on the slot contracts and the `volatile` config write-back that 0.1.7 introduced. What 0.2.0 changed is dependency alignment only (peer range, pi-ai, schemastery) plus one added directory field; no UI or protocol change. A mismatched core fails to start DSH.
+**Match the plugin version to your DSH core** — this repository now ships **`0.13.2`**, and it targets **DSH `0.1.7-alpha.1`, `0.2.0-rc.1` and `0.2.0-rc.2`**: the UI is still a sidebar card, a centre-column dashboard and a settings section, built on the slot contracts and the `volatile` config write-back that 0.1.7 introduced. What 0.2.0 changed is dependency alignment only (peer range, pi-ai, schemastery) plus one added directory field; no UI or protocol change. A mismatched core fails to start DSH.
 
 | Plugin | Required DSH core | Desktop app |
 |---|---|---|
-| **0.13.1 (this release)** | both `0.1.7-alpha.1` and `0.2.0-rc.2` (the peer range is the union of the two lines; the development dependencies compile against `0.2.0-rc.2`). **Newer prereleases (e.g. `0.2.1-rc.x`) are NOT covered automatically** — the plugin must extend its peer range first | desktop builds bundling `0.1.7+` or `0.2.0-rc.2` |
+| **0.13.2 (this release)** | `0.1.7-alpha.1` / `0.2.0-rc.1` / `0.2.0-rc.2` (the peer range is the union; the development dependencies compile against `0.2.0-rc.2`). Adds `0.2.0-rc.1`, where an unmet peer otherwise makes the host **skip this whole bundle**; both 0.2.0 rcs install now. Also folds in the upstream image-access path fix (#52), the `displayMsg` error-copy fix (#58) and Windows international Electron discovery (#59/#60). **Newer prereleases (e.g. `0.2.1-rc.x`) are NOT covered automatically** — the plugin must extend its peer range first | desktop builds bundling `0.1.7+` / `0.2.0-rc.1` / `0.2.0-rc.2` |
+| **0.13.1** | both `0.1.7-alpha.1` and `0.2.0-rc.2`; **not `0.2.0-rc.1`**, where it is skipped wholesale | desktop builds bundling `0.1.7+` or `0.2.0-rc.2` |
 | **0.13.0 (dashboard UI)** | the `0.1.7-alpha.1` line only: its peer range excludes `0.2.0`, so a `0.2.0-rc.2` core reports an unmet peer dependency | desktop builds bundling `0.1.7+` |
 
-> **Do not install from npm.** The `dsh-workbuddy-connect` package on npm is the upstream author's older build (latest `0.6.3`, which requires DSH `0.1.5-rc.1`); it is a different code line from this repository's `0.13.1`, and installing it on a `0.1.7` core stops DSH from starting. Use the GitHub command below.
+> **Do not install from npm.** The `dsh-workbuddy-connect` package on npm is the upstream author's older build (latest `0.6.3`, which requires DSH `0.1.5-rc.1`); it is a different code line from this repository's `0.13.2`, and installing it on a `0.1.7` core stops DSH from starting. Use the GitHub command below.
 
-- **Where the cards live** (0.13.1):
+- **Where the cards live** (0.13.2):
 
   ```text
-  DSH 0.1.7+ / 0.2.0-rc.2 + this plugin
+  DSH 0.1.7+ / 0.2.0-rc.1 / 0.2.0-rc.2 + this plugin
   ├─ Settings → Models
   │   └─ no WorkBuddy rows          ← intentional
   ├─ Settings → Built-in Plugins
@@ -213,10 +214,11 @@ dsh web
 ```
 
 ```sh
-# Desktop (the DSH Desktop app)
+# Desktop (DSH 0.2+: the official CLI manages the desktop profile)
 dsh plugin --profile desktop add github:functy23/dsh-workbuddy-connect
-dsh --profile desktop
 ```
+
+> The desktop app starts itself, so `dsh --profile desktop` does not apply. Before DSH 0.2 the CLI refused the `desktop` profile; there, install the same `github:functy23/dsh-workbuddy-connect` from the app's **Plugins → Add plugin** page. A wrapped desktop app (e.g. DSH NEXT) exposes the CLI through its bundled `desktop-cli`, which needs `pnpm` on PATH — otherwise use the Plugins page too.
 
 ```sh
 # TUI (terminal UI)
@@ -255,7 +257,7 @@ The sidebar's two display preferences (whether the card is drawn, and how it sta
 
 ## Known limitations
 
-- Verified on macOS with the DSH Web / Desktop / TUI profiles (this requires DSH `0.1.7-alpha.1` or `0.2.0-rc.2` and Node 22+; TUI requires the terminal UI package `0.10.0-beta.5` or newer — see the Install section). Windows probes Local and Roaming AppData in order; WSL first reads credentials from the mounted Windows user profile. If the Windows and Linux user names differ and Windows environment variables are not forwarded into WSL, point `WORKBUDDY_AUTH_FILE` (or `WORKBUDDY_AI_AUTH_FILE` for the international version) at the actual file.
+- Verified on macOS with the DSH Web / Desktop / TUI profiles (this requires DSH `0.1.7-alpha.1`, `0.2.0-rc.1` or `0.2.0-rc.2` and Node 22+; TUI requires the terminal UI package `0.10.0-beta.5` or newer — see the Install section). Windows probes Local and Roaming AppData in order; WSL first reads credentials from the mounted Windows user profile. If the Windows and Linux user names differ and Windows environment variables are not forwarded into WSL, point `WORKBUDDY_AUTH_FILE` (or `WORKBUDDY_AI_AUTH_FILE` for the international version) at the actual file.
 - **The sidebar's two display preferences need a host that can write settings**: when the status document carries no `sidebarCreditVisible` / `sidebarCreditStyle`, the settings page draws no control for it — a switch that could not be saved is worse than none. With the card switched off, the dashboard's way in moves to the same settings group.
 - **The international version's model catalog comes from the app's own interface**: the service splits it by User-Agent, which is a private implementation detail that a server-side change can break. When that happens the plugin degrades to this account's last successful catalog and then to its built-in roster, showing the source (live / saved / built-in), the fetch time, and the failure reason on the card — but long-term compatibility is not guaranteed. The CN version's catalog uses the same interface as the official CLI and is unaffected.
 - **International-version environments not yet covered**: on Windows / WSL / Linux no reliable source for the international app's version has been located yet, so the saved value or the built-in default is used. On macOS, real-shim checks covered complete GPT-family replies, tool calls, and continued turns.

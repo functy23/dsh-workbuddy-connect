@@ -7,7 +7,7 @@
  * @module dsh-workbuddy-connect/upstream
  */
 
-import { isJsonObject } from './json-value.ts'
+import { isJsonObject, parseJsonObject } from './json-value.ts'
 import { appUserAgent, resolveAppVersion, type AppVersionInfo } from './app-version.ts'
 import { chatUserAgent, fallbackChatIdentity, resolveChatIdentity, type ChatIdentity } from './client-identity.ts'
 import type { WorkBuddyCredential } from './auth.ts'
@@ -374,6 +374,11 @@ const SESSION_DEAD_MARKERS: readonly string[] = ['Offline user session not found
  */
 export function classifyUpstreamError(status: number, body: string): UpstreamErrorKind {
   if (status === 402) return 'hard_credit'
+  // A 401 is an auth failure whatever its body says: there is no business
+  // meaning for it on this upstream, so it is classified before any body
+  // marker can claim it. Keeping it in `session_dead` also preserves the
+  // `(http 401)` status note the host needs to classify it as AUTH.
+  if (status === 401) return 'session_dead'
   const lower = body.toLowerCase()
   for (const marker of HARD_CREDIT_MARKERS) {
     if (lower.includes(marker.toLowerCase()) || body.includes(marker)) return 'hard_credit'
@@ -381,14 +386,36 @@ export function classifyUpstreamError(status: number, body: string): UpstreamErr
   for (const marker of SESSION_DEAD_MARKERS) {
     if (body.includes(marker)) return 'session_dead'
   }
-  // A 401 is account-scoped whatever its body says: the credential presented was
-  // refused, and another account's credential is a different question.
-  if (status === 401) return 'session_dead'
   if (status === 429) return 'soft_rate'
   if (status === 404) return 'not_found'
   if (status >= 500) return 'server'
   if (status >= 400) return 'client'
   return 'client'
+}
+
+/**
+ * Extract a user-facing error message from an upstream JSON body.
+ *
+ * WorkBuddy answers business refusals (safety review, illegal request) with a
+ * structured `displayMsg`; pasting the raw JSON into the error text made the
+ * host's AUTH heuristic (any bare `401`/`403` word) replace the real reason
+ * with an invalid-API-key banner. Prefers `displayMsg.zh` then `displayMsg.en`,
+ * falls back to `msg`, and returns `undefined` for anything else so the caller
+ * can fall back to the raw excerpt.
+ */
+export function extractDisplayErrorMessage(body: string): string | undefined {
+  const parsed = parseJsonObject(body.trim())
+  if (!parsed) return undefined
+  const displayMsg = parsed['displayMsg']
+  if (isJsonObject(displayMsg)) {
+    const zh = displayMsg['zh']
+    if (typeof zh === 'string' && zh.trim() !== '') return zh.trim()
+    const en = displayMsg['en']
+    if (typeof en === 'string' && en.trim() !== '') return en.trim()
+  }
+  const msg = parsed['msg']
+  if (typeof msg === 'string' && msg.trim() !== '') return msg.trim()
+  return undefined
 }
 
 /** Region for a login domain; an empty domain means CN (matching upstream tooling). */

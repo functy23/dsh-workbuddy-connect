@@ -16,6 +16,7 @@ import {
   unwrapDesktopAuthDocument,
 } from '../src/desktop-credential-protection.ts'
 import { WorkBuddyCredentialStore } from '../src/auth.ts'
+import { AI_VARIANT, CN_VARIANT, electronProfileFor, type WorkBuddyVariant } from '../src/variants.ts'
 
 /**
  * Issue #39/#40: WorkBuddy 5.6 seals the desktop auth file's token fields in
@@ -196,7 +197,7 @@ describe('at-rest payload validation', () => {
 describe('at-rest key provider', () => {
   it('caches one source resolution per key id', async () => {
     let calls = 0
-    const provider = new WorkBuddyAtRestKeyProvider({ source: async () => { calls += 1; return PAYLOAD_TEXT } })
+    const provider = new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT), source: async () => { calls += 1; return PAYLOAD_TEXT } })
     expect(await provider.protectorKeyFor([KEY_ID])).toEqual(KEY)
     expect(await provider.protectorKeyFor([KEY_ID])).toBe(await provider.protectorKeyFor([KEY_ID]))
     expect(calls).toBe(1)
@@ -207,6 +208,7 @@ describe('at-rest key provider', () => {
     let release!: () => void
     const gate = new Promise<void>(resolve => { release = resolve })
     const provider = new WorkBuddyAtRestKeyProvider({
+      product: electronProfileFor(CN_VARIANT),
       source: async () => { calls += 1; await gate; return PAYLOAD_TEXT },
     })
     const first = provider.protectorKeyFor([KEY_ID])
@@ -224,7 +226,7 @@ describe('at-rest key provider', () => {
     const otherId = createHash('sha256').update(otherKey).digest('hex').slice(0, 16)
     const answers = [PAYLOAD_TEXT, otherPayload, PAYLOAD_TEXT]
     let calls = 0
-    const provider = new WorkBuddyAtRestKeyProvider({ source: async () => { calls += 1; return answers[calls - 1] ?? '' } })
+    const provider = new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT), source: async () => { calls += 1; return answers[calls - 1] ?? '' } })
     expect(await provider.protectorKeyFor([KEY_ID])).toEqual(KEY)
     expect(await provider.protectorKeyFor([otherId])).toEqual(otherKey)
     // The rotated key is now cached: the old id forces the third resolution.
@@ -233,13 +235,13 @@ describe('at-rest key provider', () => {
   })
 
   it('refuses envelopes sealed by a different installation', async () => {
-    const provider = new WorkBuddyAtRestKeyProvider({ source: async () => PAYLOAD_TEXT })
+    const provider = new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT), source: async () => PAYLOAD_TEXT })
     await expect(provider.protectorKeyFor(['ffffffffffffffff']))
       .rejects.toThrow(/does not match/)
   })
 
   it('reports an unusable payload without echoing its content', async () => {
-    const provider = new WorkBuddyAtRestKeyProvider({ source: async () => 'not-json-at-all' })
+    const provider = new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT), source: async () => 'not-json-at-all' })
     await expect(provider.protectorKeyFor([KEY_ID])).rejects.toThrow(/unusable at-rest payload/)
     await expect(provider.protectorKeyFor([KEY_ID])).rejects.not.toThrow(/not-json/)
   })
@@ -248,30 +250,62 @@ describe('at-rest key provider', () => {
     // The default spawn path against a plain Node binary: the private
     // `workbuddyStorage` binding does not exist there, so the helper exits
     // non-zero and the error carries a reason — never payload content.
-    const provider = new WorkBuddyAtRestKeyProvider({ electronPath: process.execPath })
+    const provider = new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT), electronPath: process.execPath })
     await expect(provider.protectorKeyFor([KEY_ID])).rejects.toThrow(/WorkBuddy key helper/)
   })
 
   it('fails safely when the configured binary is missing', async () => {
-    const provider = new WorkBuddyAtRestKeyProvider({ electronPath: '/nonexistent/workbuddy-electron' })
+    const provider = new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT), electronPath: '/nonexistent/workbuddy-electron' })
     await expect(provider.protectorKeyFor([KEY_ID])).rejects.toThrow(/not available at \/nonexistent\/workbuddy-electron/)
   })
 
   it('resolves the helper path from env, then the platform default', () => {
     vi.stubEnv(WORKBUDDY_ELECTRON_BIN_ENV, '/opt/wb-electron')
-    expect(new WorkBuddyAtRestKeyProvider().helperPath()).toBe('/opt/wb-electron')
+    expect(new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT) }).helperPath()).toBe('/opt/wb-electron')
     // Blank env falls through to the platform default, but only for a provider
     // that was actually configured to look for the app (issue #48 §3.3): the
     // no-arg default is 'none' so a provider that was never told which product
     // it serves cannot reach for another product's binary.
     vi.stubEnv(WORKBUDDY_ELECTRON_BIN_ENV, '   ')
-    const cn = new WorkBuddyAtRestKeyProvider({ discovery: 'macos-workbuddy' })
+    const cn = new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT), discovery: 'macos-workbuddy' })
     if (process.platform === 'darwin') {
       expect(cn.helperPath()).toBe('/Applications/WorkBuddy.app/Contents/MacOS/Electron')
     } else {
       expect(cn.helperPath()).toBeUndefined()
     }
-    expect(new WorkBuddyAtRestKeyProvider().helperPath()).toBeUndefined()
+    expect(new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT) }).helperPath()).toBeUndefined()
+  })
+
+  it('keeps externally assembled variants source-compatible (public type)', () => {
+    // `WorkBuddyVariant` is exported: callers have been building their own
+    // descriptors since before the electron profile existed. Such a variant
+    // must keep working — resolution falls back by variant id, and a custom
+    // id lands on the CN profile, the store's other legacy default.
+    const legacyAi = { id: AI_VARIANT.id } as unknown as WorkBuddyVariant
+    const legacyCustom = { id: 'workbuddy-custom' } as unknown as WorkBuddyVariant
+    expect(new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(legacyAi) }).helperPath())
+      .toBe(new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(AI_VARIANT) }).helperPath())
+    expect(new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(legacyCustom) }).helperPath())
+      .toBe(new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT) }).helperPath())
+    expect(new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(undefined) }).helperPath())
+      .toBe(new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT) }).helperPath())
+  })
+
+  it('separates the env variables per product (issue #60)', () => {
+    // Only the AI variable set: the AI provider takes it, the CN provider does
+    // not see it at all (its own variable is unset, so no explicit path).
+    vi.stubEnv(electronProfileFor(AI_VARIANT).envVar, '/opt/ai-electron')
+    expect(new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(AI_VARIANT) }).helperPath()).toBe('/opt/ai-electron')
+    expect(new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT) }).helperPath()).toBeUndefined()
+    // Only the CN variable set: mirrored.
+    vi.unstubAllEnvs()
+    vi.stubEnv(WORKBUDDY_ELECTRON_BIN_ENV, '/opt/cn-electron')
+    expect(new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(CN_VARIANT) }).helperPath()).toBe('/opt/cn-electron')
+    expect(new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(AI_VARIANT) }).helperPath()).toBeUndefined()
+    // A blank value reads as unset for the AI product, and the CN value must
+    // not leak through to it.
+    vi.stubEnv(electronProfileFor(AI_VARIANT).envVar, '')
+    expect(new WorkBuddyAtRestKeyProvider({ product: electronProfileFor(AI_VARIANT) }).helperPath()).toBeUndefined()
   })
 })
 

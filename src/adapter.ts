@@ -12,7 +12,7 @@ import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completio
 import { resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
 import type { LlmModelInfo, LlmResolvedModelInfo } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
-import type { ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
+import type { PiAiAdapterOptions, ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyCatalog, WorkBuddyModelInfo } from './catalog.ts'
@@ -87,6 +87,11 @@ const NO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const
 function withLegacyImageBudget(store: AttachmentStore): AttachmentStore {
   return new Proxy(store, {
     get(target, property, receiver) {
+      if (property === 'imageHostPath') {
+        // The access resolver calls through this proxy; keep the concrete
+        // store as `this` for implementations that use private fields.
+        return target.imageHostPath.bind(target)
+      }
       if (property !== 'readImageRequest') return Reflect.get(target, property, receiver)
       return (...args: Parameters<AttachmentStore['readImageRequest']>) => {
         const [ref, policy, signal] = args
@@ -160,6 +165,8 @@ export interface WorkBuddyAdapterOptions {
   catalog: WorkBuddyCatalog
   /** Resolve the durable attachment service at request time, when present. */
   resolveAttachments?: () => AttachmentStore | undefined
+  /** Resolve one image's path in the current model-tool execution world. */
+  resolveImageAccess?: NonNullable<PiAiAdapterOptions['resolveImageAccess']>
   /**
    * Look up a local probe observation for a model. Consulted only for rows the
    * upstream left undeclared; absent means declared-set-only behavior.
@@ -295,7 +302,7 @@ function toPiModel(info: WorkBuddyModelInfo, baseUrl: string, observed?: WorkBud
  * `modelErrors` since 0.1.5-alpha.2 (#12).
  */
 export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBuddyAdapter {
-  const { shim, store, catalog, resolveAttachments, observe, hidden } = options
+  const { shim, store, catalog, resolveAttachments, resolveImageAccess, observe, hidden } = options
   const providerId = options.providerId ?? WORKBUDDY_PROVIDER
   const displayName = options.displayName ?? 'WorkBuddy'
 
@@ -371,6 +378,7 @@ export function createWorkBuddyAdapter(options: WorkBuddyAdapterOptions): WorkBu
           return store === undefined ? undefined : withLegacyImageBudget(store)
         },
       },
+    ...(resolveImageAccess === undefined ? {} : { resolveImageAccess }),
   })
 
   return {
