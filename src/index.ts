@@ -1427,6 +1427,24 @@ export function apply(ctx: Context, config: Config): void {
           ...added.created ? {} : { reason: 'already in the pool; its sign-in tokens were refreshed' },
         }
       }
+      case 'adopt-desktop': {
+        let adopted: Awaited<ReturnType<WorkBuddyAccountService['adoptDesktop']>>
+        try {
+          adopted = await runtime.accounts.adoptDesktop()
+        } catch (error: unknown) {
+          // A wrong-region or unreadable file is a report, not a crash.
+          return { state: 'failed', reason: error instanceof Error ? error.message.slice(0, 300) : String(error) }
+        }
+        if (adopted === undefined) return { state: 'failed', reason: 'the desktop app holds no sign-in to read' }
+        // Adding an account can make an empty pool non-empty, which is what
+        // reveals the model group; the caller's sync handles that.
+        return {
+          state: 'added',
+          name: adopted.account.label ?? adopted.account.nickname ?? adopted.account.uid.slice(0, 8),
+          created: adopted.created,
+          ...adopted.created ? {} : { reason: 'already in the pool; its sign-in tokens were refreshed' },
+        }
+      }
       case 'remove': {
         if (!pool.remove(action.id)) return { state: 'failed', reason: 'no such account' }
         accounts.invalidateCredits(action.id)

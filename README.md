@@ -1,7 +1,7 @@
 # DSH WorkBuddy Connect
 
 
-[![version](https://img.shields.io/badge/version-0.13.3-blue)](https://github.com/functy23/dsh-workbuddy-connect/blob/main/package.json)
+[![version](https://img.shields.io/badge/version-0.13.4-blue)](https://github.com/functy23/dsh-workbuddy-connect/blob/main/package.json)
 [![GitHub stars](https://img.shields.io/github/stars/functy23/dsh-workbuddy-connect)](https://github.com/functy23/dsh-workbuddy-connect)
 [![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 [![DSH core](https://img.shields.io/badge/DSH-0.1.7%20%7C%200.2.0--rc.2-blueviolet)](https://github.com/deepseek-ai/deepseek-harness)
@@ -181,18 +181,19 @@ WorkBuddy 中模型的推理档位信息目前分散在上游接口与客户端�
 
 前置：已安装并登录 WorkBuddy 桌面 App。插件复用 App 的登录状态，账号切换自动跟随；装了国际版 WorkBuddy AI 的同样适用，两版互不影响。
 
-**版本对应（重要）**：本仓库最新发布 `0.13.3`，**同时面向 DSH `0.1.7-alpha.1`、`0.2.0-rc.1` 与 `0.2.0-rc.2` 三条线**：界面仍是侧栏卡片 + 中栏仪表盘 + 设置分区页，用的还是 0.1.7 起的 slot 与设置机制；0.2.0 带来的差异只有依赖对齐（peer range、pi-ai、schemastery）与一个新增的目录字段，界面与协议都没变。核心不匹配会导致 DSH 启动失败。
+**版本对应（重要）**：本仓库最新发布 `0.13.4`，**同时面向 DSH `0.1.7-alpha.1`、`0.2.0-rc.1` 与 `0.2.0-rc.2` 三条线**：界面仍是侧栏卡片 + 中栏仪表盘 + 设置分区页，用的还是 0.1.7 起的 slot 与设置机制；0.2.0 带来的差异只有依赖对齐（peer range、pi-ai、schemastery）与一个新增的目录字段，界面与协议都没变。核心不匹配会导致 DSH 启动失败。
 
 | 插件版本 | 要求的 DSH 核心 | 桌面 App |
 |---|---|---|
-| **0.13.3（本版）** | 与 `0.13.2` 相同的 DSH 支持面（`0.1.7-alpha.1` / `0.2.0-rc.1` / `0.2.0-rc.2`）。修复设置页「添加账号」弹窗的层级：它已 portal 到 `document.body`，但 `z-index` 只有 60，被宿主 1000–1100 的设置/对话图层压住，于是弹窗出现在设置界面后面、关闭设置时被一起卸载；现在置顶到最高 | 同 `0.13.2` |
+| **0.13.4（本版）** | 与 `0.13.2` 相同的 DSH 支持面。修复「删除账号」删不掉：桌面 App 的登录态每 30 秒会被重新采集，删除只把它移出列表、随即又被加回（停用的账号还会变回启用）；现在删除会记住该桌面账号、不再自动回来。同时「添加账号」新增 **桌面端凭证** 选项，可显式把桌面登录重新加回池子 | 同 `0.13.2` |
+| **0.13.3** | 与 `0.13.2` 相同的 DSH 支持面（`0.1.7-alpha.1` / `0.2.0-rc.1` / `0.2.0-rc.2`）。修复设置页「添加账号」弹窗的层级：它已 portal 到 `document.body`，但 `z-index` 只有 60，被宿主 1000–1100 的设置/对话图层压住，于是弹窗出现在设置界面后面、关闭设置时被一起卸载；现在置顶到最高 | 同 `0.13.2` |
 | **0.13.2** | `0.1.7-alpha.1` / `0.2.0-rc.1` / `0.2.0-rc.2` 三条线（peer range 是并集，开发依赖按 `0.2.0-rc.2` 编译）。补上 `0.2.0-rc.1`：该核心会因 peer 不满足**整体跳过本 bundle**，两个 0.2.0 rc 现在都能装。同时并入上游的图片访问路径修复（#52）、displayMsg 错误文案修复（#58）与 Windows 国际版 Electron 发现（#59/#60）。**更新的 prerelease（如 `0.2.1-rc.x`）不自动覆盖**，需插件显式跟进 peer range 后才支持 | 搭载 `0.1.7+` / `0.2.0-rc.1` / `0.2.0-rc.2` 核心的桌面版 |
 | **0.13.1** | `0.1.7-alpha.1` 与 `0.2.0-rc.2` 两条线；**不含 `0.2.0-rc.1`**，在该核心上会被整体跳过 | 搭载 `0.1.7+` 或 `0.2.0-rc.2` 核心的桌面版 |
 | **0.13.0（仪表盘界面）** | 只覆盖 `0.1.7-alpha.1` 线：peer range 未含 `0.2.0`，装进 `0.2.0-rc.2` 核心会报 peer 不满足 | 搭载 `0.1.7+` 核心的桌面版 |
 
-> **不要从 npm 装。** npm 上的 `dsh-workbuddy-connect` 是上游作者的旧版本（最新 `0.6.3`，只支持 DSH `0.1.5-rc.1`），与本仓库的 `0.13.3` 不是同一个代码线，装到 `0.1.7` 核心上会让 DSH 起不来。请用下面的 GitHub 命令安装。
+> **不要从 npm 装。** npm 上的 `dsh-workbuddy-connect` 是上游作者的旧版本（最新 `0.6.3`，只支持 DSH `0.1.5-rc.1`），与本仓库的 `0.13.4` 不是同一个代码线，装到 `0.1.7` 核心上会让 DSH 起不来。请用下面的 GitHub 命令安装。
 
-- **配置入口**（0.13.3）：
+- **配置入口**（0.13.4）：
 
   ```text
   DSH 0.1.7+ / 0.2.0-rc.1 / 0.2.0-rc.2 + 本插件

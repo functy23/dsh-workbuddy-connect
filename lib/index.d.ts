@@ -1129,6 +1129,17 @@ type WorkBuddyAccountAction = {
 } | {
   action: 'cancel';
   state: string;
+} |
+/**
+ * Adopt the desktop app's sign-in on the user's explicit request — the
+ * add-account dialog's "desktop sign-in" option.
+ *
+ * Distinct from the background sweep, which is a *sync*: that one may not
+ * resurrect an account the user removed, while this is a user action and
+ * clears that dismissal.
+ */
+{
+  action: 'adopt-desktop';
 } | {
   action: 'remove';
   id: string;
@@ -1744,6 +1755,8 @@ declare class WorkBuddyAccountPool {
   private readonly variant;
   private readonly path;
   private accounts;
+  /** Identities the user removed; see {@link PoolDocument.dismissed}. */
+  private dismissedIds;
   /**
    * Highest stamp handed out by {@link next}, seeded lazily from the rows.
    *
@@ -1810,8 +1823,23 @@ declare class WorkBuddyAccountPool {
     domain?: string;
     refreshExpiresAtMs?: number;
   }): WorkBuddyAccount | undefined;
-  /** Remove one account. */
+  /**
+   * Remove one account.
+   *
+   * A desktop account is remembered as dismissed: the app's own file still
+   * holds the sign-in, and the next credential sweep would otherwise capture it
+   * straight back. Dismissing is per identity, so it survives a restart and
+   * never touches a different account the app signs into later.
+   */
   remove(id: string): boolean;
+  /**
+   * Whether a background desktop capture must leave this identity alone.
+   *
+   * True for an account the user removed from the pool. The desktop app's file
+   * is still read — the card still reports the app's sign-in state — but the
+   * account is not re-adopted until the user adds it back on purpose.
+   */
+  ignoresDesktop(id: string): boolean;
   /**
    * Enable or disable one account.
    *
@@ -1903,6 +1931,8 @@ declare class WorkBuddyAccountPool {
    */
   primary(preferredId?: string, now?: number): WorkBuddyAccount | undefined;
   private mutate;
+  /** The dismissed-identity set, loaded alongside the accounts. */
+  private dismissed;
   private load;
   private persist;
 }
@@ -2146,13 +2176,22 @@ declare class WorkBuddyAccountService {
    */
   captureDesktop(): Promise<WorkBuddyAccount | undefined>;
   /**
+   * Adopt the desktop app's sign-in on the user's explicit request.
+   *
+   * The background sweep is a *sync* and must not resurrect an account the user
+   * removed; choosing "desktop sign-in" in the add-account dialog is the user
+   * asking for that account back, so this path clears the dismissal. Returns
+   * undefined when the app holds no sign-in to read.
+   */
+  adoptDesktop(): Promise<WorkBuddyUpsertResult | undefined>;
+  /**
    * Capture a credential that came from anywhere into the pool.
    *
    * The region is not re-checked here: {@link WorkBuddyCredentialStore} already
    * refuses a credential belonging to the other product, and the QR flow checks
    * its own answer before it gets this far.
    */
-  capture(credential: WorkBuddyCredential, syncDesktop?: boolean): WorkBuddyAccount;
+  capture(credential: WorkBuddyCredential, syncDesktop?: boolean): WorkBuddyUpsertResult | undefined;
   /**
    * The desktop app's account identity, when the app is signed in.
    *

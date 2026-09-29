@@ -10,7 +10,7 @@
  * @module dsh-workbuddy-connect/account-service
  */
 
-import type { WorkBuddyAccount, WorkBuddyAccountPool } from './account-pool.ts'
+import type { WorkBuddyAccount, WorkBuddyAccountPool, WorkBuddyUpsertResult } from './account-pool.ts'
 import { accountIdOf, credentialAccountId, credentialOf } from './account-pool.ts'
 import { profileFromToken } from './account-token.ts'
 import type { WorkBuddyCredential, WorkBuddyCredentialStore } from './auth.ts'
@@ -189,7 +189,21 @@ export class WorkBuddyAccountService {
   async captureDesktop(): Promise<WorkBuddyAccount | undefined> {
     const credential = await this.store.desktopCredential()
     if (credential === undefined) return undefined
-    return this.capture(credential, true)
+    return this.capture(credential, true)?.account
+  }
+
+  /**
+   * Adopt the desktop app's sign-in on the user's explicit request.
+   *
+   * The background sweep is a *sync* and must not resurrect an account the user
+   * removed; choosing "desktop sign-in" in the add-account dialog is the user
+   * asking for that account back, so this path clears the dismissal. Returns
+   * undefined when the app holds no sign-in to read.
+   */
+  async adoptDesktop(): Promise<WorkBuddyUpsertResult | undefined> {
+    const credential = await this.store.desktopCredential()
+    if (credential === undefined) return undefined
+    return this.capture(credential, false)
   }
 
   /**
@@ -199,8 +213,13 @@ export class WorkBuddyAccountService {
    * refuses a credential belonging to the other product, and the QR flow checks
    * its own answer before it gets this far.
    */
-  capture(credential: WorkBuddyCredential, syncDesktop = false): WorkBuddyAccount {
-    const result = this.pool.upsert({
+  capture(credential: WorkBuddyCredential, syncDesktop = false): WorkBuddyUpsertResult | undefined {
+    // A desktop re-read must not undo the user's decision to remove this
+    // account: the app's file still carries the sign-in, so without this gate
+    // the next sweep would upsert it straight back (as a fresh, enabled
+    // account), which read as "deleting does nothing".
+    if (syncDesktop && this.pool.ignoresDesktop(credentialAccountId(credential))) return undefined
+    return this.pool.upsert({
       uid: credential.uid,
       ...credential.enterpriseId === undefined ? {} : { enterpriseId: credential.enterpriseId },
       ...credential.nickname === undefined ? {} : { nickname: credential.nickname },
@@ -214,7 +233,6 @@ export class WorkBuddyAccountService {
       // real sign-in is allowed to.
       sync: syncDesktop,
     })
-    return result.account
   }
 
   /**

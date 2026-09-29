@@ -102,6 +102,7 @@ export function parseAccountAction(text: string): WorkBuddyAccountAction | undef
       const state = stringField(wrapped['state'])
       return state === undefined ? undefined : { action: 'cancel', state }
     }
+    case 'adopt-desktop': return { action: 'adopt-desktop' }
     case 'remove': {
       const id = stringField(wrapped['id'])
       return id === undefined ? undefined : { action: 'remove', id }

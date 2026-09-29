@@ -256,6 +256,16 @@ interface PoolDocument {
   version: typeof POOL_FORMAT_VERSION
   /** Accounts in rotation order (index 0 tried first among equals). */
   accounts: WorkBuddyAccount[]
+  /**
+   * Desktop identities the user removed from the pool on purpose.
+   *
+   * A removed desktop account cannot simply be forgotten: the app's own file is
+   * re-read every thirty seconds, and without this list the next sweep would
+   * upsert it straight back as a brand-new account — enabled and unbenched —
+   * which is what made a removed account look un-deletable and made a disabled
+   * one come back on. An explicit re-add (QR or a pasted token) clears the mark.
+   */
+  dismissed?: string[]
 }
 
 /** Pool-file path for one variant inside the Harness home. */
@@ -339,6 +349,8 @@ export class WorkBuddyAccountPool {
   private readonly variant: WorkBuddyVariant
   private readonly path: string
   private accounts: WorkBuddyAccount[] | undefined
+  /** Identities the user removed; see {@link PoolDocument.dismissed}. */
+  private dismissedIds: Set<string> | undefined
   /**
    * Highest stamp handed out by {@link next}, seeded lazily from the rows.
    *
@@ -393,6 +405,9 @@ export class WorkBuddyAccountPool {
     const id = accountIdOf(input.uid, input.enterpriseId)
     const now = Date.now()
     const index = accounts.findIndex(account => account.id === id)
+    // A user-performed add is the one thing allowed to bring back an identity
+    // the user removed; a background re-read is not (see ignoresDesktop).
+    if (input.sync !== true) this.dismissed().delete(id)
     if (index < 0) {
       const account: WorkBuddyAccount = {
         id,
@@ -548,14 +563,33 @@ export class WorkBuddyAccountPool {
     return updated
   }
 
-  /** Remove one account. */
+  /**
+   * Remove one account.
+   *
+   * A desktop account is remembered as dismissed: the app's own file still
+   * holds the sign-in, and the next credential sweep would otherwise capture it
+   * straight back. Dismissing is per identity, so it survives a restart and
+   * never touches a different account the app signs into later.
+   */
   remove(id: string): boolean {
     const accounts = this.load()
     const index = accounts.findIndex(account => account.id === id)
     if (index < 0) return false
-    accounts.splice(index, 1)
+    const [removed] = accounts.splice(index, 1)
+    if (removed?.origin === 'desktop') this.dismissed().add(id)
     this.persist()
     return true
+  }
+
+  /**
+   * Whether a background desktop capture must leave this identity alone.
+   *
+   * True for an account the user removed from the pool. The desktop app's file
+   * is still read — the card still reports the app's sign-in state — but the
+   * account is not re-adopted until the user adds it back on purpose.
+   */
+  ignoresDesktop(id: string): boolean {
+    return this.dismissed().has(id)
   }
 
   /**
@@ -772,6 +806,12 @@ export class WorkBuddyAccountPool {
     return next
   }
 
+  /** The dismissed-identity set, loaded alongside the accounts. */
+  private dismissed(): Set<string> {
+    this.load()
+    return this.dismissedIds ?? (this.dismissedIds = new Set())
+  }
+
   private load(): WorkBuddyAccount[] {
     if (this.accounts !== undefined) return this.accounts
     const accounts: WorkBuddyAccount[] = []
@@ -780,10 +820,15 @@ export class WorkBuddyAccountPool {
     // read separately and re-captured on the next sweep.
     const saved = readStoreDocument(this.path, POOL_FORMAT_VERSION, document => {
       const raw = document['accounts']
-      return Array.isArray(raw) ? raw : undefined
+      if (!Array.isArray(raw)) return undefined
+      const dismissed = Array.isArray(document['dismissed'])
+        ? document['dismissed'].filter((value): value is string => typeof value === 'string' && value !== '')
+        : []
+      return { accounts: raw, dismissed }
     })
+    this.dismissedIds = new Set(saved?.dismissed ?? [])
     const seen = new Set<string>()
-    for (const value of saved ?? []) {
+    for (const value of saved?.accounts ?? []) {
       if (!isAccount(value)) continue
       const account = normalizeAccount(value)
       // A duplicate identity in the file would make selection ambiguous; the
@@ -802,7 +847,12 @@ export class WorkBuddyAccountPool {
 
   private persist(): void {
     try {
-      const document: PoolDocument = { version: POOL_FORMAT_VERSION, accounts: this.load() }
+      const dismissed = [...this.dismissed()]
+      const document: PoolDocument = {
+        version: POOL_FORMAT_VERSION,
+        accounts: this.load(),
+        ...dismissed.length === 0 ? {} : { dismissed },
+      }
       writeStoreDocument(this.path, document)
     } catch {
       // See the class doc: the in-memory pool stays authoritative for this run.

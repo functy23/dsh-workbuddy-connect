@@ -132,6 +132,12 @@ async function mount(): Promise<{ port: number, pool: WorkBuddyAccountPool, acco
         case 'test': return { state: 'ok', test: { ok: true, message: 'ok' } }
         case 'cancel': return { state: 'ok' }
         case 'label': return { state: 'ok' }
+        case 'adopt-desktop': {
+          const adopted = await accounts.adoptDesktop()
+          return adopted === undefined
+            ? { state: 'failed', reason: 'no desktop sign-in' }
+            : { state: 'added', created: adopted.created }
+        }
       }
     },
   }, KEY)
@@ -270,5 +276,41 @@ describe('QR add flow through the route', () => {
     const removed = await post({ port, headers: authed(port), body: JSON.stringify({ action: 'remove', id: qr.id }) })
     expect(JSON.parse(removed.body)).toMatchObject({ state: 'ok' })
     expect(pool.get(qr.id)).toBeUndefined()
+  })
+})
+
+/**
+ * Removing a desktop account used to be undone by the next credential sweep:
+ * the app's own file still held the sign-in, so `captureDesktop()` re-created
+ * the account (enabled, unbenched) seconds later. That is what read as "delete
+ * does nothing" — and what turned a disabled account back on.
+ */
+describe('removing a desktop account survives the credential sweep', () => {
+  it('does not re-adopt it on the next sweep, and forgets it on an explicit adopt', async () => {
+    const { pool, accounts } = await mount()
+    const captured = await accounts.captureDesktop()
+    expect(captured?.id).toBe('uid-desktop:')
+    expect(pool.remove('uid-desktop:')).toBe(true)
+    expect(pool.list()).toHaveLength(0)
+
+    // The desktop file has not moved: the sweep must leave the removal alone.
+    expect(await accounts.captureDesktop()).toBeUndefined()
+    expect(pool.list()).toHaveLength(0)
+
+    // The dialog's desktop option is the user asking for it back.
+    const adopted = await accounts.adoptDesktop()
+    expect(adopted?.account.id).toBe('uid-desktop:')
+    expect(pool.list().map(account => account.id)).toContain('uid-desktop:')
+    expect((await accounts.captureDesktop())?.id).toBe('uid-desktop:')
+  })
+
+  it('remembers the removal across a restart', async () => {
+    const { pool, accounts } = await mount()
+    await accounts.captureDesktop()
+    pool.remove('uid-desktop:')
+    // A fresh pool over the same file is what a DSH restart builds.
+    const reopened = new WorkBuddyAccountPool({ variant: CN_VARIANT, path: pool.filePath() })
+    expect(reopened.ignoresDesktop('uid-desktop:')).toBe(true)
+    expect(reopened.list()).toHaveLength(0)
   })
 })

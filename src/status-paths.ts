@@ -440,6 +440,15 @@ export type WorkBuddyAccountAction =
   | { action: 'add-cookie', token: string }
   | { action: 'poll', state: string }
   | { action: 'cancel', state: string }
+  /**
+   * Adopt the desktop app's sign-in on the user's explicit request — the
+   * add-account dialog's "desktop sign-in" option.
+   *
+   * Distinct from the background sweep, which is a *sync*: that one may not
+   * resurrect an account the user removed, while this is a user action and
+   * clears that dismissal.
+   */
+  | { action: 'adopt-desktop' }
   | { action: 'remove', id: string }
   | { action: 'enable', id: string, enabled: boolean }
   | { action: 'label', id: string, label?: string }

@@ -1,7 +1,7 @@
 # DSH WorkBuddy Connect
 
 
-[![version](https://img.shields.io/badge/version-0.13.3-blue)](https://github.com/functy23/dsh-workbuddy-connect/blob/main/package.json)
+[![version](https://img.shields.io/badge/version-0.13.4-blue)](https://github.com/functy23/dsh-workbuddy-connect/blob/main/package.json)
 [![GitHub stars](https://img.shields.io/github/stars/functy23/dsh-workbuddy-connect)](https://github.com/functy23/dsh-workbuddy-connect)
 [![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 [![DSH core](https://img.shields.io/badge/DSH-0.1.7%20%7C%200.2.0--rc.2-blueviolet)](https://github.com/deepseek-ai/deepseek-harness)
@@ -178,18 +178,19 @@ For models without declared levels, Web and Desktop instead use user-authorized,
 
 Prerequisite: the WorkBuddy desktop app is installed and signed in. The plugin reuses the app's sign-in state and follows account switches automatically; the same applies to the international WorkBuddy AI app, and the two do not affect each other.
 
-**Match the plugin version to your DSH core** — this repository now ships **`0.13.3`**, and it targets **DSH `0.1.7-alpha.1`, `0.2.0-rc.1` and `0.2.0-rc.2`**: the UI is still a sidebar card, a centre-column dashboard and a settings section, built on the slot contracts and the `volatile` config write-back that 0.1.7 introduced. What 0.2.0 changed is dependency alignment only (peer range, pi-ai, schemastery) plus one added directory field; no UI or protocol change. A mismatched core fails to start DSH.
+**Match the plugin version to your DSH core** — this repository now ships **`0.13.4`**, and it targets **DSH `0.1.7-alpha.1`, `0.2.0-rc.1` and `0.2.0-rc.2`**: the UI is still a sidebar card, a centre-column dashboard and a settings section, built on the slot contracts and the `volatile` config write-back that 0.1.7 introduced. What 0.2.0 changed is dependency alignment only (peer range, pi-ai, schemastery) plus one added directory field; no UI or protocol change. A mismatched core fails to start DSH.
 
 | Plugin | Required DSH core | Desktop app |
 |---|---|---|
-| **0.13.3 (this release)** | same DSH support as `0.13.2` (`0.1.7-alpha.1` / `0.2.0-rc.1` / `0.2.0-rc.2`). Fixes the add-account dialog's stacking: it portals to `document.body` but sat at `z-index: 60`, under the host's 1000–1100 Settings/chat layers, so it appeared behind Settings and was unmounted with it; now pinned on top | same as `0.13.2` |
+| **0.13.4 (this release)** | same DSH support as `0.13.2`. Fixes "Remove account" doing nothing: the desktop app's sign-in is re-captured every 30 seconds, so a removal only left the list and was upserted straight back (a disabled account came back enabled). A removed desktop account is now remembered and left alone, and the add-account dialog gains a **Desktop sign-in** option to adopt it again on purpose | same as `0.13.2` |
+| **0.13.3** | same DSH support as `0.13.2` (`0.1.7-alpha.1` / `0.2.0-rc.1` / `0.2.0-rc.2`). Fixes the add-account dialog's stacking: it portals to `document.body` but sat at `z-index: 60`, under the host's 1000–1100 Settings/chat layers, so it appeared behind Settings and was unmounted with it; now pinned on top | same as `0.13.2` |
 | **0.13.2** | `0.1.7-alpha.1` / `0.2.0-rc.1` / `0.2.0-rc.2` (the peer range is the union; the development dependencies compile against `0.2.0-rc.2`). Adds `0.2.0-rc.1`, where an unmet peer otherwise makes the host **skip this whole bundle**; both 0.2.0 rcs install now. Also folds in the upstream image-access path fix (#52), the `displayMsg` error-copy fix (#58) and Windows international Electron discovery (#59/#60). **Newer prereleases (e.g. `0.2.1-rc.x`) are NOT covered automatically** — the plugin must extend its peer range first | desktop builds bundling `0.1.7+` / `0.2.0-rc.1` / `0.2.0-rc.2` |
 | **0.13.1** | both `0.1.7-alpha.1` and `0.2.0-rc.2`; **not `0.2.0-rc.1`**, where it is skipped wholesale | desktop builds bundling `0.1.7+` or `0.2.0-rc.2` |
 | **0.13.0 (dashboard UI)** | the `0.1.7-alpha.1` line only: its peer range excludes `0.2.0`, so a `0.2.0-rc.2` core reports an unmet peer dependency | desktop builds bundling `0.1.7+` |
 
-> **Do not install from npm.** The `dsh-workbuddy-connect` package on npm is the upstream author's older build (latest `0.6.3`, which requires DSH `0.1.5-rc.1`); it is a different code line from this repository's `0.13.3`, and installing it on a `0.1.7` core stops DSH from starting. Use the GitHub command below.
+> **Do not install from npm.** The `dsh-workbuddy-connect` package on npm is the upstream author's older build (latest `0.6.3`, which requires DSH `0.1.5-rc.1`); it is a different code line from this repository's `0.13.4`, and installing it on a `0.1.7` core stops DSH from starting. Use the GitHub command below.
 
-- **Where the cards live** (0.13.3):
+- **Where the cards live** (0.13.4):
 
   ```text
   DSH 0.1.7+ / 0.2.0-rc.1 / 0.2.0-rc.2 + this plugin

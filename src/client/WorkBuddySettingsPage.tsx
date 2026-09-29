@@ -1038,7 +1038,7 @@ function SaveBarGlyph({ tone }: { tone: 'success' | 'error' }): React.ReactNode 
 }
 
 /** How one product can be signed into. */
-type SignInMode = 'qr' | 'web' | 'token'
+type SignInMode = 'qr' | 'web' | 'token' | 'desktop'
 
 /**
  * The sign-in dialog for one product.
@@ -1054,7 +1054,7 @@ type SignInMode = 'qr' | 'web' | 'token'
  * but its other half: the user signs in on the web, copies the token, and pastes
  * it. The copy says so rather than leaving the two tabs unexplained.
  */
-function AddAccountDialog({ variant, t, busy, error, onCancel, onSubmitQr, onPollQr, onSubmitToken, onOpenLink }: {
+function AddAccountDialog({ variant, t, busy, error, onCancel, onSubmitQr, onPollQr, onSubmitToken, onSubmitDesktop, onOpenLink }: {
   variant: WorkBuddyCardVariant
   t: Translate
   busy: boolean
@@ -1063,6 +1063,8 @@ function AddAccountDialog({ variant, t, busy, error, onCancel, onSubmitQr, onPol
   onSubmitQr: () => Promise<WorkBuddyQrChallenge | undefined>
   onPollQr: (state: string) => Promise<boolean>
   onSubmitToken: (token: string) => Promise<boolean>
+  /** Adopt the desktop app's own sign-in; false when the host refused or none exists. */
+  onSubmitDesktop: () => Promise<boolean>
   /** Hand the minted sign-in page to the user's browser; false when it could not. */
   onOpenLink: (url: string) => Promise<boolean>
 }): React.ReactNode {
@@ -1090,6 +1092,14 @@ function AddAccountDialog({ variant, t, busy, error, onCancel, onSubmitQr, onPol
    * opening and offers the explicit actions below after that.
    */
   const asked = useRef(false)
+  /**
+   * Whether this dialog has already tried the desktop option.
+   *
+   * Same one-shot rule as `asked`: reading the app's file is a real action (it
+   * clears any earlier removal), so it happens once per opening and the error
+   * below is how a failure is reported.
+   */
+  const askedDesktop = useRef(false)
 
   /**
    * Mint a challenge as soon as a route that needs one is shown.
@@ -1108,6 +1118,19 @@ function AddAccountDialog({ variant, t, busy, error, onCancel, onSubmitQr, onPol
       setChallenge(next)
     })
   }, [mode, onSubmitQr])
+
+  /**
+   * Try the desktop option as soon as it is chosen.
+   *
+   * Reading the app's own file is fast and local, so a button would only repeat
+   * the choice the segment already made; a failure surfaces through `error`
+   * below and the user can pick another route.
+   */
+  useEffect(() => {
+    if (mode !== 'desktop' || askedDesktop.current) return
+    askedDesktop.current = true
+    void onSubmitDesktop()
+  }, [mode, onSubmitDesktop])
 
   /**
    * Open the minted login page in the system browser, once.
@@ -1163,10 +1186,12 @@ function AddAccountDialog({ variant, t, busy, error, onCancel, onSubmitQr, onPol
               // the flow its app completes on its own.
               ? [
                   { value: 'qr', label: t('accountLoginQr') },
+                  { value: 'desktop', label: t('accountLoginDesktop') },
                   { value: 'token', label: t('accountLoginToken') },
                 ]
               : [
                   { value: 'web', label: t('accountLoginWeb') },
+                  { value: 'desktop', label: t('accountLoginDesktop') },
                   { value: 'token', label: t('accountLoginToken') },
                 ]}
             onChange={next => { setMode(next as SignInMode) }}
@@ -1195,7 +1220,12 @@ function AddAccountDialog({ variant, t, busy, error, onCancel, onSubmitQr, onPol
           </div>
         )}
 
-        {mode === 'qr'
+        {mode === 'desktop'
+          ? <>
+              <p className="wbp-dialogBody">{t('accountDesktopBody')}</p>
+              {busy ? <span className="wbp-hint">{t('loading')}</span> : null}
+            </>
+          : mode === 'qr'
           ? <>
               <p className="wbp-dialogBody">{t('accountAddBody')}</p>
               <div className="wbp-qrFrame">
@@ -1523,6 +1553,24 @@ export function WorkBuddySettingsPage({ t, context, refreshPanel, openPanel }: W
     setBusy(true)
     try {
       const result = await run(variant, { action: 'add-cookie', token })
+      if (result === undefined) return false
+      if (result.state !== 'added') {
+        setError(result.reason ?? t('requestFailed'))
+        return false
+      }
+      setAdding(undefined)
+      await readAll()
+      return true
+    } finally {
+      if (mounted.current) setBusy(false)
+    }
+  }, [readAll, run, t])
+
+  const submitDesktop = useCallback(async (variant: WorkBuddyCardVariant): Promise<boolean> => {
+    setError(undefined)
+    setBusy(true)
+    try {
+      const result = await run(variant, { action: 'adopt-desktop' })
       if (result === undefined) return false
       if (result.state !== 'added') {
         setError(result.reason ?? t('requestFailed'))
@@ -2140,6 +2188,7 @@ export function WorkBuddySettingsPage({ t, context, refreshPanel, openPanel }: W
           onSubmitQr={() => submitQr(adding)}
           onPollQr={state => pollQr(adding, state)}
           onSubmitToken={token => submitToken(adding, token)}
+          onSubmitDesktop={() => submitDesktop(adding)}
           onOpenLink={url => openSignInPage(adding, url)}
         />
       )}
