@@ -283,7 +283,15 @@ export const PAGE_CSS = `
 .wbp-modelProbeAction{display:inline-flex;justify-content:flex-end}
 .wbp-modelContext{display:inline-flex;justify-content:flex-end;align-items:center;text-align:right;white-space:nowrap}
 /* --------------------------------------------------------------- dialogs */
-.wbp-overlay{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--dsw-alias-bg-mask,rgba(0,0,0,.45))}
+/* The overlay portals to document.body (see WorkBuddySettingsPage), so its
+   z-index is compared in the ROOT stacking context — against the host's own
+   chrome, not just this page. The host stacks its shell and chat surfaces up
+   to z-index 1100 and reserves layers beyond that; the original 60 sat behind
+   the Settings surface the dialog was opened from, so the click meant to
+   dismiss the dialog landed on Settings instead — and closing Settings
+   unmounted the dialog with it. Pinned near the top of the 32-bit range: a
+   modal this plugin opens must never interleave with host chrome. */
+.wbp-overlay{position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--dsw-alias-bg-mask,rgba(0,0,0,.45))}
 .wbp-dialog{box-sizing:border-box;width:100%;max-width:380px;display:flex;flex-direction:column;gap:14px;padding:20px;border-radius:16px;border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-elevation-prominent,0 12px 32px -8px rgba(0,0,0,.24))}
 .wbp-dialogTitle{margin:0;color:var(--dsw-alias-label-primary);font-size:16px;line-height:24px;font-weight:500;text-align:center}
 .wbp-dialogBody{margin:0;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px}
