@@ -1,10 +1,10 @@
 # DSH WorkBuddy Connect
 
 
-[![version](https://img.shields.io/badge/version-0.13.0-blue)](https://github.com/functy23/dsh-workbuddy-connect/blob/main/package.json)
+[![version](https://img.shields.io/badge/version-0.13.1-blue)](https://github.com/functy23/dsh-workbuddy-connect/blob/main/package.json)
 [![GitHub stars](https://img.shields.io/github/stars/functy23/dsh-workbuddy-connect)](https://github.com/functy23/dsh-workbuddy-connect)
 [![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
-[![DSH core](https://img.shields.io/badge/DSH-0.1.7--alpha.1%2B-blueviolet)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH core](https://img.shields.io/badge/DSH-0.1.7%20%7C%200.2.0--rc.2-blueviolet)](https://github.com/deepseek-ai/deepseek-harness)
 
 
 [English](./README.en.md) | 中文
@@ -181,18 +181,19 @@ WorkBuddy 中模型的推理档位信息目前分散在上游接口与客户端�
 
 前置：已安装并登录 WorkBuddy 桌面 App。插件复用 App 的登录状态，账号切换自动跟随；装了国际版 WorkBuddy AI 的同样适用，两版互不影响。
 
-**版本对应（重要）**：本仓库只发布 `0.13.0`，**只面向 DSH `0.1.7-alpha.1` 及以上**：界面是侧栏卡片 + 中栏仪表盘 + 设置分区页，用的是 0.1.7 的 slot 与设置机制。核心不匹配会导致 DSH 启动失败。
+**版本对应（重要）**：本仓库最新发布 `0.13.1`，**同时面向 DSH `0.1.7-alpha.1` 与 `0.2.0-rc.2` 两条线**：界面仍是侧栏卡片 + 中栏仪表盘 + 设置分区页，用的还是 0.1.7 起的 slot 与设置机制；0.2.0 带来的差异只有依赖对齐（peer range、pi-ai、schemastery）与一个新增的目录字段，界面与协议都没变。核心不匹配会导致 DSH 启动失败。
 
 | 插件版本 | 要求的 DSH 核心 | 桌面 App |
 |---|---|---|
-| **0.13.0（仪表盘界面）** | `0.1.7-alpha.1` 及以上（插件依赖 0.1.7 的 slot 与设置机制）。**更新的 prerelease（如 `0.1.8-alpha.x`）不自动覆盖**，需插件显式跟进 peer range 后才支持 | 搭载 `0.1.7+` 核心的桌面版 |
+| **0.13.1（本版）** | `0.1.7-alpha.1` 与 `0.2.0-rc.2` 两条线（peer range 已放宽为两条线的并集，开发依赖按 `0.2.0-rc.2` 编译）。**更新的 prerelease（如 `0.2.1-rc.x`）不自动覆盖**，需插件显式跟进 peer range 后才支持 | 搭载 `0.1.7+` 或 `0.2.0-rc.2` 核心的桌面版 |
+| **0.13.0（仪表盘界面）** | 只覆盖 `0.1.7-alpha.1` 线：peer range 未含 `0.2.0`，装进 `0.2.0-rc.2` 核心会报 peer 不满足 | 搭载 `0.1.7+` 核心的桌面版 |
 
-> **不要从 npm 装。** npm 上的 `dsh-workbuddy-connect` 是上游作者的旧版本（最新 `0.6.3`，只支持 DSH `0.1.5-rc.1`），与本仓库的 `0.13.0` 不是同一个代码线，装到 `0.1.7` 核心上会让 DSH 起不来。请用下面的 GitHub 命令安装。
+> **不要从 npm 装。** npm 上的 `dsh-workbuddy-connect` 是上游作者的旧版本（最新 `0.6.3`，只支持 DSH `0.1.5-rc.1`），与本仓库的 `0.13.1` 不是同一个代码线，装到 `0.1.7` 核心上会让 DSH 起不来。请用下面的 GitHub 命令安装。
 
-- **配置入口**（0.13.0）：
+- **配置入口**（0.13.1）：
 
   ```text
-  DSH 0.1.7+ + 本插件
+  DSH 0.1.7+ / 0.2.0-rc.2 + 本插件
   ├─ 设置 → 模型
   │   └─ 不显示 WorkBuddy 两行      ← 有意如此
   ├─ 设置 → 内置插件
@@ -256,7 +257,7 @@ dsh plugin --profile web exec dsh-workbuddy-connect doctor --provider workbuddy-
 
 ## 已知限制
 
-- 在 macOS 的 DSH Web / Desktop / TUI 下验证通过（要求 DSH `0.1.7-alpha.1`+、Node 22+；TUI 需终端界面插件 `0.10.0-beta.5` 及以上，见安装章节说明）。Windows 会依次探测 Local 与 Roaming AppData；WSL 会优先从挂载的 Windows 用户目录读取登录凭据。若 Windows 与 Linux 用户名不同且 Windows 环境变量未传入 WSL，请通过 `WORKBUDDY_AUTH_FILE`（国际版为 `WORKBUDDY_AI_AUTH_FILE`）指定实际位置。
+- 在 macOS 的 DSH Web / Desktop / TUI 下验证通过（要求 DSH `0.1.7-alpha.1` 或 `0.2.0-rc.2`、Node 22+；TUI 需终端界面插件 `0.10.0-beta.5` 及以上，见安装章节说明）。Windows 会依次探测 Local 与 Roaming AppData；WSL 会优先从挂载的 Windows 用户目录读取登录凭据。若 Windows 与 Linux 用户名不同且 Windows 环境变量未传入 WSL，请通过 `WORKBUDDY_AUTH_FILE`（国际版为 `WORKBUDDY_AI_AUTH_FILE`）指定实际位置。
 - **侧边栏的两个显示偏好依赖宿主能写入设置**：状态文档里没有 `sidebarCreditVisible` / `sidebarCreditStyle` 时，设置页不画对应的控件——给一个存不下去的开关比不给更糟。关掉卡片后，仪表盘的入口改在设置页的同一组里。
 - **国际版的模型目录来自 App 界面接口**：服务端按 User-Agent 分流下发，属私有实现，上游改动可能使其失效。届时插件按「本账号上次成功目录 → 内置目录」降级，并在卡片上标明来源（实时 / 已保存 / 内置）、更新时间与失败原因，但不能保证长期兼容。国内版目录走官方 CLI 同款接口，不受此影响。
 - **国际版仍未覆盖的环境**：Windows / WSL / Linux 下国际版 App 的版本读取尚未找到可靠来源，会退回最近保存的版本或内置值。macOS 上已通过真实 shim 验证 GPT 系完整回复、工具调用与续轮。

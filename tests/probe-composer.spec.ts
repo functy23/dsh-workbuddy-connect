@@ -42,7 +42,7 @@ describe('Composer model probe', () => {
   function select(nextProvider: string, nextModel: string) {
     provider = nextProvider
     model = nextModel
-    state = { current: { provider, model }, status: 'ready', groups: [], failures: [], error: null, routable: true }
+    state = { current: { provider, model }, pending: null, status: 'ready', groups: [], failures: [], error: null, routable: true }
     listeners.forEach(listener => listener())
   }
 
@@ -119,9 +119,13 @@ describe('Composer model probe', () => {
    * renders in. The double above only ever holds a real selection, so a guard
    * written against `undefined` alone looks right here and dereferences null in
    * the app.
+   *
+   * `pending` is the other field the upstream interface requires: it carries the
+   * selection a `select` submitted but has not settled yet, and is `null` in
+   * every snapshot these doubles model (nothing in flight).
    */
   it('renders nothing, and throws nothing, while the directory has no selection', async () => {
-    state = { current: null, status: 'idle', groups: [], failures: [], error: null, routable: null }
+    state = { current: null, pending: null, status: 'idle', groups: [], failures: [], error: null, routable: null }
     await mount()
     expect(view?.toJSON()).toBeNull()
   })
