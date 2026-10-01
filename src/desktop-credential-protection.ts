@@ -27,7 +27,7 @@
 
 import { isJsonObject, parseJsonObject } from './json-value.ts'
 import { execFile } from 'node:child_process'
-import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs'
+import { accessSync, constants, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import { electronProfileFor } from './variants.ts'
@@ -889,13 +889,17 @@ export function workBuddyWindowsDiscoveryTools(): WorkBuddyWindowsDiscoveryTools
       }
 
       const seen = new Map<string, string>()
+      const rejected: string[] = []
       for (const candidate of new Set(candidates)) {
         const inspection = inspectWindowsElectronCandidate(candidate, this.platform, this.product.windows.exeBasename)
         if (inspection === 'unresolved') {
           unresolved = true
           continue
         }
-        if (inspection === undefined) continue
+        if (inspection === undefined) {
+          rejected.push(candidate)
+          continue
+        }
         seen.set(inspection.identity, inspection.electronPath)
       }
       if (unresolved) throw discoveryIncomplete(this.product.productName, 'some registry entries or candidates could not be checked')
@@ -908,11 +912,19 @@ export function workBuddyWindowsDiscoveryTools(): WorkBuddyWindowsDiscoveryTools
         )
       }
       if (seen.size === 0) {
-        throw new WorkBuddyElectronPathError(
-          'electron-binary-not-found',
-          `no usable ${this.product.productName} Electron binary was found in the default location or Windows uninstall records;`
-          + ` set ${this.product.envVar} to the app's Electron binary`,
-        )
+        // #66: "nothing was found" and "candidates were found but each failed
+        // the layout check" are different diagnoses; the old single wording
+        // claimed the former even when the latter was true, sending users
+        // hunting for an install that was right there. The counts stay, the
+        // candidate paths deliberately do not — this text reaches /status and
+        // doctor, and local install paths are not for every loopback reader.
+        const message = rejected.length === 0
+          ? `no usable ${this.product.productName} Electron binary was found in the default location or Windows uninstall records;`
+            + ` set ${this.product.envVar} to the app's Electron binary`
+          : `Windows uninstall records found ${rejected.length} ${this.product.productName} candidate${rejected.length > 1 ? 's' : ''},`
+            + ` but ${rejected.length > 1 ? 'none' : 'it'} did not match the expected app layout (the app's exe beside a version file and resources\\app.asar);`
+            + ` set ${this.product.envVar} to the installed app's executable to use it`
+        throw new WorkBuddyElectronPathError('electron-binary-not-found', message)
       }
       return [...seen.values()][0]!
     } finally {
@@ -1064,13 +1076,16 @@ function inspectWindowsElectronCandidate(
   }
   if (!WINDOWS_ELECTRON_VERSION_PATTERN.test(version)) return undefined
 
-  let resourcesStat
   try {
-    resourcesStat = statSync(join(installRoot, 'resources', 'app.asar'))
+    // The archive path must not go through fs.stat: under an Electron host,
+    // asar interception stats app.asar as a directory (isFile() false, size
+    // 0), which deterministically excluded every registry candidate (#66).
+    // Listing the real resources directory is asar-independent — identical
+    // on plain Node and inside Electron.
+    if (!readdirSync(join(installRoot, 'resources')).includes('app.asar')) return undefined
   } catch (error: unknown) {
     return isENOENT(error) ? undefined : 'unresolved'
   }
-  if (!resourcesStat.isFile()) return undefined
 
   let identity: string
   try {

@@ -31,7 +31,7 @@ afterEach(async () => {
 
 async function windowsCandidate(name = 'WorkBuddy.exe', options: {
   version?: string
-  appAsar?: boolean
+  appAsar?: boolean | 'directory'
   installRoot?: string
 } = {}): Promise<string> {
   const installRoot = options.installRoot ?? join(root, name.replace(/\.exe$/iu, ''))
@@ -39,7 +39,8 @@ async function windowsCandidate(name = 'WorkBuddy.exe', options: {
   await mkdir(join(installRoot, 'resources'), { recursive: true })
   await writeFile(electronPath, '#!/bin/sh\n', { mode: 0o755 })
   await writeFile(join(installRoot, 'version'), options.version ?? '37.10.3-24')
-  if (options.appAsar !== false) await writeFile(join(installRoot, 'resources', 'app.asar'), '')
+  if (options.appAsar === 'directory') await mkdir(join(installRoot, 'resources', 'app.asar'))
+  else if (options.appAsar !== false) await writeFile(join(installRoot, 'resources', 'app.asar'), '')
   return electronPath
 }
 
@@ -275,6 +276,17 @@ describe('Windows default and registry discovery', () => {
     expect(keyProvider.helperPath()).toBe(candidate)
   })
 
+  it('accepts an app.asar that stats as a directory — the shape an Electron host reports (#66)', async () => {
+    // Electron's asar interception makes fs.stat report app.asar as a
+    // directory (isFile() false, size 0); the old isFile() layout check
+    // excluded every registry candidate when the plugin itself ran inside
+    // the DSH Desktop Electron host.
+    const candidate = await windowsCandidate('WorkBuddy.exe', { appAsar: 'directory' })
+    const keyProvider = provider(fakeWindowsTools(registryOutput([{ name: 'WorkBuddy', icon: `"${candidate},0"` }])))
+    await expect(keyProvider.protectorKeyFor([KEY_ID])).resolves.toEqual(KEY)
+    expect(keyProvider.helperPath()).toBe(candidate)
+  })
+
   it('ignores empty InstallLocation and uses a quoted DisplayIcon with an icon index', async () => {
     const candidate = await windowsCandidate()
     const keyProvider = provider(fakeWindowsTools(registryOutput([
@@ -321,6 +333,26 @@ describe('Windows candidate identity and failure semantics', () => {
     if (removeVersion) await rm(join(dirname(candidate), 'version'))
     const keyProvider = provider(fakeWindowsTools(registryOutput([{ name: 'WorkBuddy', icon: `"${candidate},0"` }])))
     await expect(keyProvider.protectorKeyFor([KEY_ID])).rejects.toMatchObject({ reasonCode: 'electron-binary-not-found' })
+  })
+
+  it('reports rejected candidates by count, without echoing their local paths (#66)', async () => {
+    const candidate = await windowsCandidate('WorkBuddy.exe', { installRoot: join(root, 'deep', 'secret-user-dir') , appAsar: false })
+    const keyProvider = provider(fakeWindowsTools(registryOutput([{ name: 'WorkBuddy', icon: `"${candidate},0"` }])))
+    const error = await keyProvider.protectorKeyFor([KEY_ID]).catch((caught: unknown) => caught)
+    expect(error).toMatchObject({ reasonCode: 'electron-binary-not-found' })
+    expect((error as Error).message).toContain('found 1 WorkBuddy candidate')
+    expect((error as Error).message).toContain('did not match the expected app layout')
+    expect((error as Error).message).toContain('WORKBUDDY_ELECTRON_BIN')
+    // The reason reaches /status and doctor; local install paths must not.
+    expect((error as Error).message).not.toContain(candidate)
+    expect((error as Error).message).not.toContain('secret-user-dir')
+  })
+
+  it('keeps the plain not-found wording when the registry held no candidates at all', async () => {
+    const keyProvider = provider(fakeWindowsTools(''))
+    const error = await keyProvider.protectorKeyFor([KEY_ID]).catch((caught: unknown) => caught)
+    expect((error as Error).message).toContain('no usable WorkBuddy Electron binary was found in the default location or Windows uninstall records')
+    expect((error as Error).message).not.toContain('did not match the expected app layout')
   })
 
   it('folds duplicate and realpath aliases into one candidate', async () => {

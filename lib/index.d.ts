@@ -203,17 +203,22 @@ type ProbeOutcome = {
   requests: number;
   reason: string;
 };
+/** Which endpoint's rejection vocabulary a probe interprets. */
+type ProbeRegion = 'cn' | 'global';
 /**
  * Probe one model.
  *
  * `options.candidates` exists so tests can shorten the sweep; production always
- * uses {@link PROBE_EFFORT_CANDIDATES}.
+ * uses {@link PROBE_EFFORT_CANDIDATES}. `options.region` selects which
+ * endpoint's rejection vocabulary is read; it defaults to `cn`, which is also
+ * the production default for the China app.
  */
 declare function probeModel(options: {
   send: ProbeSender;
   sentinel?: SentinelFactory;
   candidates?: readonly WorkBuddyEffort[];
   timeoutMs?: number;
+  region?: ProbeRegion;
 }): Promise<ProbeOutcome>;
 //#endregion
 //#region src/upstream.d.ts
@@ -2617,6 +2622,12 @@ interface WorkBuddyProbeServiceOptions {
    */
   account: () => string | undefined;
   sentinel?: SentinelFactory;
+  /**
+   * Which endpoint's rejection vocabulary sweeps read. The two apps talk to
+   * different upstreams that answer a bad effort with different codes, so each
+   * runtime passes its own region instead of sharing one widening set.
+   */
+  region: ProbeRegion;
   /** Injectable for tests; defaults to the live upstream sender. */
   send?: (modelId: string) => ProbeSender;
 }

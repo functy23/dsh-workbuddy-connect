@@ -605,6 +605,9 @@ function createVariantRuntime(
     // model list produced it.
     credentials: accountsAsCredentialSource(accounts),
     client,
+    // The two endpoints answer a rejected effort with different codes; each
+    // runtime reads only the vocabulary measured on its own endpoint.
+    region: variant.region,
     consent: () => current().probeConsent === true,
     // Observations are per account: the service reads and writes its records
     // against this identity, so one account's detected levels never answer for

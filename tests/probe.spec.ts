@@ -17,6 +17,8 @@ import {
 
 const ACCEPTED: ProbeAttempt = { status: 200, streamed: true }
 const REJECTED: ProbeAttempt = { status: 400, streamed: false, errorCode: 'invalid_reasoning_effort' }
+/** The global endpoint's rejection, measured 2026-10-01: same 11133 envelope, generic code. */
+const GLOBAL_REJECTED: ProbeAttempt = { status: 400, streamed: false, errorCode: 'model_param_invalid' }
 
 /** A sender that answers from a table keyed by effort, with `undefined` = baseline. */
 function tableSender(table: Map<string | undefined, ProbeAttempt>): ProbeSender {
@@ -100,6 +102,77 @@ describe('probeModel', () => {
     const table = new Map<string | undefined, ProbeAttempt>([
       [undefined, ACCEPTED],
       [SENTINEL, { status: 400, streamed: false, errorCode: 'something_else' }],
+    ])
+    const outcome = await probeModel({ send: tableSender(table), sentinel: () => SENTINEL })
+    expect(outcome.validation).toBe('unknown')
+  })
+
+  it('reads the global endpoint\'s generic parameter rejection as an effort rejection', async () => {
+    // Measured 2026-10-01 on www.workbuddy.ai: a value that cannot exist is
+    // answered 400/11133 with `extError.code: model_param_invalid`, while the
+    // identical request without the field — and every canonical spelling —
+    // answers 200 and streams.
+    const table = new Map<string | undefined, ProbeAttempt>([
+      [undefined, ACCEPTED],
+      [SENTINEL, GLOBAL_REJECTED],
+      ['low', ACCEPTED],
+      ['medium', ACCEPTED],
+      ['high', ACCEPTED],
+      ['xhigh', ACCEPTED],
+      ['max', ACCEPTED],
+    ])
+    const outcome = await probeModel({ send: tableSender(table), sentinel: () => SENTINEL, region: 'global' })
+    expect(outcome.validation).toBe('validating')
+    expect(outcome.efforts).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+  })
+
+  it('applies the global rejection code to the level sweep as well', async () => {
+    const table = new Map<string | undefined, ProbeAttempt>([
+      [undefined, ACCEPTED],
+      [SENTINEL, GLOBAL_REJECTED],
+      ['low', ACCEPTED],
+      ['medium', GLOBAL_REJECTED],
+      ['high', ACCEPTED],
+      ['xhigh', GLOBAL_REJECTED],
+      ['max', ACCEPTED],
+    ])
+    const outcome = await probeModel({ send: tableSender(table), sentinel: () => SENTINEL, region: 'global' })
+    expect(outcome.validation).toBe('validating')
+    expect(outcome.efforts).toEqual(['low', 'high', 'max'])
+  })
+
+  it('keeps the China endpoint degrading the global-only generic code to unknown', async () => {
+    // `model_param_invalid` was measured only on the global endpoint. The China
+    // endpoint was measured answering the specific `invalid_reasoning_effort`,
+    // so a generic code there must not be read as an effort rejection — the
+    // region split is what keeps each endpoint to its own vocabulary.
+    const table = new Map<string | undefined, ProbeAttempt>([
+      [undefined, ACCEPTED],
+      [SENTINEL, GLOBAL_REJECTED],
+    ])
+    const outcome = await probeModel({ send: tableSender(table), sentinel: () => SENTINEL, region: 'cn' })
+    expect(outcome.validation).toBe('unknown')
+  })
+
+  it('keeps the China endpoint degrading the global-only generic code mid-sweep too', async () => {
+    const table = new Map<string | undefined, ProbeAttempt>([
+      [undefined, ACCEPTED],
+      [SENTINEL, REJECTED],
+      ['low', ACCEPTED],
+      ['medium', GLOBAL_REJECTED],
+    ])
+    const outcome = await probeModel({ send: tableSender(table), sentinel: () => SENTINEL, region: 'cn' })
+    // A non-decisive answer mid-sweep: no partial set may leak out.
+    expect(outcome.validation).toBe('unknown')
+    expect(outcome.efforts).toEqual([])
+  })
+
+  it('still degrades a sibling code from the same envelope to unknown', async () => {
+    // `integer_below_min_value` arrives in the same 11133 envelope but names
+    // the `max_tokens` floor, so it says nothing about the effort value.
+    const table = new Map<string | undefined, ProbeAttempt>([
+      [undefined, ACCEPTED],
+      [SENTINEL, { status: 400, streamed: false, errorCode: 'integer_below_min_value' }],
     ])
     const outcome = await probeModel({ send: tableSender(table), sentinel: () => SENTINEL })
     expect(outcome.validation).toBe('unknown')
