@@ -53,8 +53,8 @@ describe('variant descriptors', () => {
     expect(CN_VARIANT.desktopFilename).toBe('workbuddy-desktop.info')
     expect(CN_VARIANT.ownFilename).toBe('.workbuddy-auth.json')
     expect(CN_VARIANT.probeFilename).toBe('.workbuddy-probe.json')
-    expect(CN_VARIANT.statusPath).toBe('/plugins/dsh-workbuddy-connect/status')
-    expect(CN_VARIANT.probePath).toBe('/plugins/dsh-workbuddy-connect/probe')
+    expect(CN_VARIANT.statusPath).toBe('/plugins/dsh-workbuddy-connect-functy/status')
+    expect(CN_VARIANT.probePath).toBe('/plugins/dsh-workbuddy-connect-functy/probe')
   })
 
   it('gives the AI variant its own files, routes, and env var', () => {
@@ -65,8 +65,8 @@ describe('variant descriptors', () => {
     expect(AI_VARIANT.desktopFilename).toBe('workbuddy-desktop-ai.info')
     expect(AI_VARIANT.ownFilename).toBe('.workbuddy-ai-auth.json')
     expect(AI_VARIANT.probeFilename).toBe('.workbuddy-ai-probe.json')
-    expect(AI_VARIANT.statusPath).toBe('/plugins/dsh-workbuddy-connect/ai/status')
-    expect(AI_VARIANT.probePath).toBe('/plugins/dsh-workbuddy-connect/ai/probe')
+    expect(AI_VARIANT.statusPath).toBe('/plugins/dsh-workbuddy-connect-functy/ai/status')
+    expect(AI_VARIANT.probePath).toBe('/plugins/dsh-workbuddy-connect-functy/ai/probe')
   })
 
   it('shares no file, route, or env var between the two', () => {

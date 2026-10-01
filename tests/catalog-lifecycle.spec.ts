@@ -231,11 +231,11 @@ describe('catalog lifecycle', () => {
     await rm(cnFile)
     const routes = FakeWebServer.current!.routes
     const server = await serve(routes)
-    const status = JSON.parse((await (await fetch(`http://127.0.0.1:${String(server.port)}/plugins/dsh-workbuddy-connect/status`, {
+    const status = JSON.parse((await (await fetch(`http://127.0.0.1:${String(server.port)}/plugins/dsh-workbuddy-connect-functy/status`, {
       headers: { host: `127.0.0.1:${String(server.port)}` },
     })).text())) as { probeKey: string, accounts: { accounts: readonly { id: string }[] } }
     for (const account of status.accounts.accounts) {
-      const removed = await fetch(`http://127.0.0.1:${String(server.port)}/plugins/dsh-workbuddy-connect/accounts`, {
+      const removed = await fetch(`http://127.0.0.1:${String(server.port)}/plugins/dsh-workbuddy-connect-functy/accounts`, {
         method: 'POST',
         headers: {
           host: `127.0.0.1:${String(server.port)}`,
@@ -347,7 +347,7 @@ describe('catalog lifecycle', () => {
     })
 
     const routes = FakeWebServer.current!.routes
-    expect(routes.has('/plugins/dsh-workbuddy-connect/status')).toBe(true)
+    expect(routes.has('/plugins/dsh-workbuddy-connect-functy/status')).toBe(true)
     const server = await serve(routes)
     const get = async (path: string) => JSON.parse((await (await fetch(`http://127.0.0.1:${server.port}${path}`, { headers: { host: `127.0.0.1:${server.port}` } })).text()))
     const post = async (path: string, key: string, body: unknown) =>
@@ -358,7 +358,7 @@ describe('catalog lifecycle', () => {
       })
 
     // A's observation is live on the card before the switch.
-    const before = await get('/plugins/dsh-workbuddy-connect/status')
+    const before = await get('/plugins/dsh-workbuddy-connect-functy/status')
     const key = before.probeKey as string
     expect(before.probe.results.map((r: { id: string }) => r.id)).toContain('acct-a-model')
     expect(before.catalog.source).toBe('live')
@@ -367,13 +367,13 @@ describe('catalog lifecycle', () => {
     await writeFile(cnFile, credentialDocument('copilot.tencent.com', 'uid-b'))
     failCatalog = true
 
-    const failed = await post('/plugins/dsh-workbuddy-connect/probe', key, { action: 'refresh' })
+    const failed = await post('/plugins/dsh-workbuddy-connect-functy/probe', key, { action: 'refresh' })
     expect(failed.status).toBe(200)
     expect(await failed.json()).toMatchObject({ state: 'failed' })
 
     // The invariant: nothing of account A's is *served* under account B. Its
     // observation survives on disk (keyed to A) but no read under B sees it.
-    const after = await get('/plugins/dsh-workbuddy-connect/status')
+    const after = await get('/plugins/dsh-workbuddy-connect-functy/status')
     expect(after.probe.results).toEqual([])
     expect(after.catalog.source).toBe('fallback')
     expect(String(after.catalog.error)).toMatch(/503|upstream/i)
@@ -384,7 +384,7 @@ describe('catalog lifecycle', () => {
     // Recovery: the same manual action once the upstream answers again.
     failCatalog = false
     rosterModel = 'acct-b-model'
-    const ok = await post('/plugins/dsh-workbuddy-connect/probe', key, { action: 'refresh' })
+    const ok = await post('/plugins/dsh-workbuddy-connect-functy/probe', key, { action: 'refresh' })
     expect(await ok.json()).toMatchObject({ state: 'refreshed' })
     await vi.waitFor(async () => {
       expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toEqual(['acct-b-model'])
@@ -394,10 +394,10 @@ describe('catalog lifecycle', () => {
     // detection — the observation survived the round trip through account B.
     await writeFile(cnFile, credentialDocument('copilot.tencent.com', 'uid-a'))
     rosterModel = 'acct-a-model'
-    const back = await post('/plugins/dsh-workbuddy-connect/probe', key, { action: 'refresh' })
+    const back = await post('/plugins/dsh-workbuddy-connect-functy/probe', key, { action: 'refresh' })
     expect(await back.json()).toMatchObject({ state: 'refreshed' })
     await vi.waitFor(async () => {
-      const status = await get('/plugins/dsh-workbuddy-connect/status')
+      const status = await get('/plugins/dsh-workbuddy-connect-functy/status')
       expect(status.probe.results.map((r: { id: string }) => r.id)).toContain('acct-a-model')
       expect((await ctx.llm.listModels('workbuddy')).map(model => model.id)).toEqual(['acct-a-model'])
     })
@@ -470,11 +470,11 @@ describe('identity changes during catalog loading', () => {
     await rm(cnFile)
     const routes = FakeWebServer.current!.routes
     const server = await serve(routes)
-    const before = JSON.parse((await (await fetch(`http://127.0.0.1:${String(server.port)}/plugins/dsh-workbuddy-connect/status`, {
+    const before = JSON.parse((await (await fetch(`http://127.0.0.1:${String(server.port)}/plugins/dsh-workbuddy-connect-functy/status`, {
       headers: { host: `127.0.0.1:${String(server.port)}` },
     })).text())) as { probeKey: string, accounts: { accounts: readonly { id: string }[] } }
     for (const account of before.accounts.accounts) {
-      await fetch(`http://127.0.0.1:${String(server.port)}/plugins/dsh-workbuddy-connect/accounts`, {
+      await fetch(`http://127.0.0.1:${String(server.port)}/plugins/dsh-workbuddy-connect-functy/accounts`, {
         method: 'POST',
         headers: {
           host: `127.0.0.1:${String(server.port)}`,

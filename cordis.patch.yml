@@ -3,4 +3,4 @@
 # separate OAuth flow is started.
 - insert:
     - id: llm-workbuddy
-      name: dsh-workbuddy-connect
+      name: dsh-workbuddy-connect-functy

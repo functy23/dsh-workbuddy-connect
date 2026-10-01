@@ -10,9 +10,9 @@
 export type WorkBuddyTranslate = (key: WorkBuddySettingsKey, params?: Record<string, unknown>) => string
 
 export const en = {
-  title: 'DSH WorkBuddy Connect',
+  title: 'DSH WorkBuddy Connect Functy',
   intro: 'Use the models in the WorkBuddy desktop app directly in DSH — zero configuration, ready out of the box.',
-  titleAI: 'DSH WorkBuddy AI Connect',
+  titleAI: 'DSH WorkBuddy AI Connect Functy',
   introAI: 'Use the models in the WorkBuddy AI international desktop app directly in DSH — zero configuration, ready out of the box.',
   expand: 'Expand',
   collapse: 'Collapse',
@@ -249,9 +249,9 @@ export const en = {
 export type WorkBuddySettingsKey = keyof typeof en
 
 export const zh: Record<WorkBuddySettingsKey, string> = {
-  title: 'DSH WorkBuddy Connect',
+  title: 'DSH WorkBuddy Connect Functy',
   intro: '在 DSH 中直接使用 WorkBuddy 桌面 App 包含的模型，开箱即用，无需额外配置。',
-  titleAI: 'DSH WorkBuddy AI Connect',
+  titleAI: 'DSH WorkBuddy AI Connect Functy',
   introAI: '在 DSH 中直接使用 WorkBuddy AI 国际版桌面 App 包含的模型，开箱即用，无需额外配置。',
   expand: '展开',
   collapse: '收起',

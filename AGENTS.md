@@ -1,11 +1,11 @@
-# dsh-workbuddy-connect Agent Notes
+# dsh-workbuddy-connect-functy Agent Notes
 
 > **自用笔记**：这是维护者本机的工作笔记——含本机绝对路径、profile 布局、发布约定与个人判例；随仓库跟踪只是为了与它描述的代码同版本可追溯，**不是项目文档，也不是给其他使用者的说明**，里面的路径和约定换台机器就不成立。
 > 面向使用者的文档是 `README.md` / `README.en.md`（两份必须同步改）。
 
 ## 项目坐标
 
-- 开发副本 `~/Desktop/dsh-workbuddy-connect`，remote `origin` = `functy23/dsh-workbuddy-connect`（分发源，见下），`upstream` = `corrinehu/dsh-workbuddy-connect`（原作者，npm 上同名包属于它）。版本 `0.13.1`，未发 npm。
+- 开发副本 `~/Desktop/dsh-workbuddy-connect`（目录名未改），remote `origin` = `functy23/dsh-workbuddy-connect-functy`（分发源），`upstream` = `corrinehu/dsh-workbuddy-connect`（原作者；npm 上的 `dsh-workbuddy-connect` 仍属于它）。本仓库 npm 包名 `dsh-workbuddy-connect-functy`，版本 `0.13.6`。
 - 核心配对（README 有表）：**0.13.1 同时对 DSH `0.1.7-alpha.1` 线与 `0.2.0-rc.2` 线**（peer range 是两条线的并集，devDeps 按 0.2.0-rc.2 编译）；**0.13.0 只对 `0.1.7-alpha.1`**；0.3.2–0.5.4 对 `0.1.5-rc.1`；0.3.0–0.3.1 对 `0.1.2-rc.1`；0.2.6 对 `0.1.1-rc.2`。**装错哪个方向 DSH 都起不来。**
 - **DSH 每次发新 prerelease，插件要显式跟 peer range**（0.2.0 那轮的实测细节见 `docs/dsh-0.2.0-adaptation-2026-09-29.md`）：真正会挡住的只有三处 —— peer range、`@earendil-works/pi-ai`（跟宿主同线）、`@deepseek-ai/schemastery`（去重到宿主那一版）。**`pnpm-workspace.yaml` 里的 `minimumReleaseAgeExclude` 是 pnpm 11 因本机全局 `minimumReleaseAge` 策略自动写的，删了会装不上 DSH 的 prerelease，别清。**
 - 两半边：`src/` = host（凭据、上游协议、routes、provider）；`src/client/` = 浏览器半边（槽位、设置页、仪表盘）。各有 tsconfig（`tsconfig.json` / `tsconfig.client.json`）。
@@ -24,7 +24,7 @@
 
 ```
 ~/.dsh/profiles/web/package.json      "dsh-workbuddy-connect": "link:/Users/functy/dsh-plugins/dsh-workbuddy-connect"
-~/.dsh/profiles/desktop/package.json  "dsh-workbuddy-connect": "link:/Users/functy/.dsh/plugins/dsh-workbuddy-connect"
+~/.dsh/profiles/desktop/package.json  "dsh-workbuddy-connect": "link:/Users/functy/.dsh/plugins/dsh-workbuddy-connect-functy"
         ↓ 上面这两个路径现在都是符号链接（2026-09-27 统一）
 /Users/functy/Desktop/dsh-workbuddy-connect        ← 唯一开发副本
 ```
@@ -35,8 +35,8 @@
 
 ## 分发渠道（重要）
 
-- **README 的安装方式是 `dsh plugin --profile <p> add github:functy23/dsh-workbuddy-connect`，不是 npm。** 因为 `lib/` 入库，git 安装直接拿预构建产物（`prepack` 在 git 安装时不执行），所以**推到 `origin/main` 就等于发布** —— 不推，别人照 README 装到的还是旧版本。
-- **npm 上的 `dsh-workbuddy-connect` 是上游 `corrinehu` 的旧线**（最新 `0.6.3`，只支持 DSH `0.1.5-rc.1`），与本仓库的 `0.13.1` 不是同一条代码线，装到 `0.1.7` 上 DSH 起不来；包名也归上游，本仓库发不了同名包。
+- **README 的安装方式是 npm 包 `dsh-workbuddy-connect-functy`，或 `github:functy23/dsh-workbuddy-connect-functy`。** `lib/` 入库，git 安装直接拿预构建产物。
+- **npm 上的 `dsh-workbuddy-connect` 仍是上游 `corrinehu` 的线**（当前 `0.7.1`，只支持 DSH `0.2.0-rc.2`）。本仓库发的是 `dsh-workbuddy-connect-functy`。provider id 和 CLI bin 名没改。
 - 同一 profile 里 `dsh-infinite-gen-4: "github:Minglink/…#<sha>"` 是 `github:` 规格可用的先例，需要可复现时可以钉 SHA。
 - `package.json` 的 `repository`/`homepage`/`bugs` 已指向 `functy23`；署名按 MIT「保留原作者 + 追加」处理：`LICENSE` = `Copyright (c) 2026 Corrine Hu and Functy`，`package.json` 的 `author` 同文。**不要**把原作者从署名里删掉。
 
@@ -73,12 +73,10 @@
   4. 15 处悬空文档引用改成自足说明；README 中英两处事实偏差（4 挂载点→6 slot、样式承诺）已纠。
   5. 测试：52 文件 / 659 用例。（原 55 / 717，差额全是随死组件一起删的。）
 - `pnpm run check` + `test:engine` 全绿。
-- 截图：`assets/{1..6,8}.png` 在用，`7.png` 是孤儿（0.1.5 旧卡片）。**2.png 的磁贴仍是修复前的 `{count}`，3.png 与 8.png 的胶囊仍是 `DSH WorkBuddy Connect`** —— 重拍覆盖同名路径即可，README 不用动。
+- 截图：`assets/{chat,model-picker,settings-accounts,settings-models}.png`（2026-10-01 实拍），`screenshots.json` 声明这四张。旧 `assets/{1..8}.png` 已删。
 
 ## 待办
 
-- （可选）重拍 `assets/2.png`：磁贴标签已修好，实拍还是旧的。
-- `assets/7.png`：删掉，还是挂进「管理页」当补充图。
 - **跨进程丢更新（未做，已知风险）**：6 个 store 都在 `$DSH_HOME` 根下，而插件同时装在 `profiles/{web,desktop}`。两个宿主同时跑时各有各的内存副本，`persist()` 是"载入→改→整份写回"，没有跨进程锁 → 后写的会覆盖先写的（账号池最疼）。正解是给每个 store 的 read-modify-write 套 `@deepseek-ai/dsh-atomic-write` 的 `withFileLock`（`auth.ts` 已在用），代价是 `persist()` 得从同步改异步，往上传染到 `account-pool` 的 `remove/reorder/setLabel/setEnabled` 等同步方法。
 - **测试里的 `as unknown as` 还剩 57 处**（原 67）：已处理掉 store/shim 假件；剩下的是 `WorkBuddyWebStatus` 部分文档夹具（`settings-page.spec.ts` 15 处最多）、`Response`/`fetch`/`Document` 平台桥接、以及 `ctx.settings` 取假件私有方法的 4 处。
 - 发布 0.13.1 前：已在 DSH `0.2.0-rc.2`（Electron 版）与 `0.1.7` 线上对齐依赖；`pnpm run check` + `test:engine` 全过；版本号已升（**先升版本号再 build，否则 `tests/version.spec.ts` 会先失败**）；**push 前先问用户**。
