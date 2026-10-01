@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "WorkBuddy Connect Functy",
+    "description": "A Functy fork of corrinehu/dsh-workbuddy-connect. Brings the models in the WorkBuddy desktop app into DeepSeek Harness, with a sidebar credit card, a centre-column dashboard, multi-account rotation and a settings page."
+  }
+}
