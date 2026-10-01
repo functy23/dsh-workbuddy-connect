@@ -45,9 +45,9 @@ Both trees have: CN/AI groups, image input, reasoning-effort detection, per-acco
 
 ## Screenshots
 
-WorkBuddy models in chat (credit card at the foot of the sidebar):
+WorkBuddy models in chat (rate and reasoning level in the composer, usage and credit on the status bar):
 
-<img src="assets/chat.png" width="1000" alt="Composer on a WorkBuddy model, sidebar credit card at the bottom">
+<img src="assets/chat.png" width="1000" alt="Chat using a WorkBuddy model, with usage and credit on the status bar">
 
 Picker groups WorkBuddy / WorkBuddy AI, with rates and free badges:
 
@@ -101,7 +101,7 @@ github:functy23/dsh-workbuddy-connect-functy
 
 ### From the CLI
 
-Replace `<profile>` with the profile you use (`web` / `desktop` / `dsh-tui`).
+Replace `<profile>` with the profile you use (`web` / `desktop`).
 
 From npm (recommended):
 
@@ -124,12 +124,6 @@ dsh web
 ```sh
 # Desktop (DSH 0.2+ lets the CLI manage the desktop profile)
 dsh plugin --profile desktop add dsh-workbuddy-connect-functy
-```
-
-```sh
-# TUI (terminal UI package 0.10.0-beta.5 or newer; older builds throw `events is not iterable`)
-dsh plugin --profile dsh-tui add dsh-workbuddy-connect-functy
-dsh --profile dsh-tui
 ```
 
 Before DSH 0.2 the CLI refused the `desktop` profile — use the UI path above. A wrapped desktop app (e.g. DSH NEXT) exposes CLI through its bundled `desktop-cli`, which needs `pnpm` on PATH.
@@ -158,7 +152,7 @@ CN by default; add `--provider workbuddy-ai` for the international product. `acc
 
 ## Known limitations
 
-- Verified on macOS Web / Desktop / TUI (DSH `0.1.7-alpha.1` / `0.2.0-rc.1` / `0.2.0-rc.2`, Node 22+). Windows probes Local then Roaming AppData; WSL reads the mounted Windows profile first. If user names differ, set `WORKBUDDY_AUTH_FILE` / `WORKBUDDY_AI_AUTH_FILE`.
+- Verified on macOS Web / Desktop (DSH `0.1.7-alpha.1` / `0.2.0-rc.1` / `0.2.0-rc.2`, Node 22+). Windows probes Local then Roaming AppData; WSL reads the mounted Windows profile first. If user names differ, set `WORKBUDDY_AUTH_FILE` / `WORKBUDDY_AI_AUTH_FILE`.
 - Sidebar display preferences need a host that can write settings; missing fields mean no switch is drawn.
 - The international catalog comes from the app's own interface and can break; the plugin then degrades to the last successful catalog, then the built-in roster.
 - International enterprise billing is unverified; a product with no credential no longer shows a model group.

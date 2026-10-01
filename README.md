@@ -45,9 +45,9 @@
 
 ## 展示
 
-对话里直接用 WorkBuddy 模型（侧栏底部有额度卡）：
+对话里直接用 WorkBuddy 模型（输入框显示倍率与推理档位，底栏有用量和额度）：
 
-<img src="assets/chat.png" width="1000" alt="对话输入框选用 WorkBuddy 模型，侧栏底部有额度卡">
+<img src="assets/chat.png" width="1000" alt="对话里使用 WorkBuddy 模型，底栏显示用量与额度">
 
 模型选择器按 WorkBuddy / WorkBuddy AI 分组，带倍率与免费标记：
 
@@ -101,7 +101,7 @@ github:functy23/dsh-workbuddy-connect-functy
 
 ### 从命令行安装
 
-把 `<profile>` 换成实际 profile（`web` / `desktop` / `dsh-tui`）。
+把 `<profile>` 换成实际 profile（`web` / `desktop`）。
 
 从 npm（推荐）：
 
@@ -124,12 +124,6 @@ dsh web
 ```sh
 # Desktop（DSH 0.2+ 才让 CLI 管 desktop profile）
 dsh plugin --profile desktop add dsh-workbuddy-connect-functy
-```
-
-```sh
-# TUI（终端界面插件需 0.10.0-beta.5 及以上，更早会 `events is not iterable`）
-dsh plugin --profile dsh-tui add dsh-workbuddy-connect-functy
-dsh --profile dsh-tui
 ```
 
 DSH 0.2 之前 CLI 不接受 `desktop` profile，请走上面的界面安装。套壳桌面 App（如 DSH NEXT）的 CLI 入口是自带的 `desktop-cli`，它要求 PATH 上有 `pnpm`。
@@ -158,7 +152,7 @@ dsh plugin --profile <profile> exec dsh-workbuddy-connect doctor
 
 ## 已知限制
 
-- 在 macOS 的 Web / Desktop / TUI 下验证过（DSH `0.1.7-alpha.1` / `0.2.0-rc.1` / `0.2.0-rc.2`，Node 22+）。Windows 依次探 Local 与 Roaming AppData；WSL 优先读挂载的 Windows 用户目录。用户名不一致时用 `WORKBUDDY_AUTH_FILE` / `WORKBUDDY_AI_AUTH_FILE`。
+- 在 macOS 的 Web / Desktop 下验证过（DSH `0.1.7-alpha.1` / `0.2.0-rc.1` / `0.2.0-rc.2`，Node 22+）。Windows 依次探 Local 与 Roaming AppData；WSL 优先读挂载的 Windows 用户目录。用户名不一致时用 `WORKBUDDY_AUTH_FILE` / `WORKBUDDY_AI_AUTH_FILE`。
 - 侧栏两个显示偏好要宿主能写设置；状态文档没有对应字段时，设置页不画开关。
 - 国际版模型目录来自 App 界面接口，属私有实现，可能失效；届时按「本账号上次成功目录 → 内置目录」降级。
 - 国际版企业计费未验证；无凭据时该版模型分组不再显示。
