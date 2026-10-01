@@ -50,4 +50,28 @@ describe('package version sync', () => {
       `no built bundle declares WORKBUDDY_CONNECT_VERSION as "${pkg.version}" — rebuild before committing or publishing`,
     ).not.toHaveLength(0)
   })
+
+  /**
+   * The client bundle's registration id is the host's browser-module identity,
+   * and the host derives that identity from the resolved manifest's package
+   * name. A literal that drifts from `name` therefore produces a bundle whose
+   * factory never matches its row: DSH reports one entry that "did not
+   * activate" and the whole browser half silently disappears (measured in
+   * 0.13.6, after the package was renamed and this id was not).
+   *
+   * The build now derives the id from package.json, so this test guards the
+   * derivation rather than a copy of the string.
+   */
+  it('the client bundle registers under the package name', () => {
+    const clientBundle = new URL('../lib/client.js', import.meta.url)
+    if (!existsSync(clientBundle)) return
+    const pkg = JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+    ) as { name: string }
+    const source = readFileSync(clientBundle, 'utf8')
+    expect(
+      source,
+      `lib/client.js must register as "${pkg.name}" — the host keys browser modules by the package name`,
+    ).toContain(`window.__ModuleLoader__.load({\n\tid: "${pkg.name}"`)
+  })
 })

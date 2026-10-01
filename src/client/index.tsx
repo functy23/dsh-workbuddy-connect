@@ -60,8 +60,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-/** Stable browser-plugin name. */
-export const name = 'dsh-workbuddy-connect-client'
+/** Stable browser-plugin name: the package name plus the `-client` half. */
+export const name = 'dsh-workbuddy-connect-functy-client'
 
 /**
  * Client services required by this browser half.

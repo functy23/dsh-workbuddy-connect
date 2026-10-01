@@ -1,15 +1,26 @@
 import { readFileSync } from 'node:fs'
 import type { UserConfig } from 'tsdown'
 
-const PLUGIN_ID = 'dsh-workbuddy-connect'
-
-/** Read the npm version once so the build injects it into src/version.ts. */
-const PACKAGE_VERSION = JSON.parse(
+/**
+ * This package's own manifest, read once.
+ *
+ * Both the browser module identity and the version stamp come from here rather
+ * than from string literals. The client bundle's registration id is not a free
+ * choice: the host keys every browser module by the *resolved manifest's package
+ * name*, so an id that no longer equals `name` stops matching its row and the
+ * entry fails to activate. That is exactly what happened in 0.13.6 — the package
+ * was renamed, this constant was not, and the client half vanished from the
+ * page. Deriving it makes that class of rename impossible.
+ */
+const MANIFEST = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
-).version as string
+) as { name: string, version: string }
+
+/** Browser module identity; must equal the package name (see {@link MANIFEST}). */
+const PLUGIN_ID = MANIFEST.name
 
 /** Build-time define map; `src/version.ts` reads `__DSH_WORKBUDDY_VERSION__`. */
-const VERSION_DEFINE = { __DSH_WORKBUDDY_VERSION__: JSON.stringify(PACKAGE_VERSION) }
+const VERSION_DEFINE = { __DSH_WORKBUDDY_VERSION__: JSON.stringify(MANIFEST.version) }
 
 /**
  * Modules the host loader provides, kept out of the browser bundle. The
