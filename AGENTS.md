@@ -5,7 +5,7 @@
 
 ## 项目坐标
 
-- 开发副本 `~/Desktop/dsh-workbuddy-connect`（目录名未改），remote `origin` = `functy23/dsh-workbuddy-connect-functy`（分发源），`upstream` = `corrinehu/dsh-workbuddy-connect`（原作者；npm 上的 `dsh-workbuddy-connect` 仍属于它）。本仓库 npm 包名 `dsh-workbuddy-connect-functy`，版本 `0.13.6`。
+- 开发副本 `~/Desktop/dsh-workbuddy-connect`（目录名未改），remote `origin` = `functy23/dsh-workbuddy-connect-functy`（分发源），`upstream` = `corrinehu/dsh-workbuddy-connect`（原作者；npm 上的 `dsh-workbuddy-connect` 仍属于它）。本仓库 npm 包名 `dsh-workbuddy-connect-functy`，版本 `0.13.8`（已发 npm，tag `v0.13.8`）。
 - 核心配对（README 有表）：**0.13.1 同时对 DSH `0.1.7-alpha.1` 线与 `0.2.0-rc.2` 线**（peer range 是两条线的并集，devDeps 按 0.2.0-rc.2 编译）；**0.13.0 只对 `0.1.7-alpha.1`**；0.3.2–0.5.4 对 `0.1.5-rc.1`；0.3.0–0.3.1 对 `0.1.2-rc.1`；0.2.6 对 `0.1.1-rc.2`。**装错哪个方向 DSH 都起不来。**
 - **DSH 每次发新 prerelease，插件要显式跟 peer range**（0.2.0 那轮的实测细节见 `docs/dsh-0.2.0-adaptation-2026-09-29.md`）：真正会挡住的只有三处 —— peer range、`@earendil-works/pi-ai`（跟宿主同线）、`@deepseek-ai/schemastery`（去重到宿主那一版）。**`pnpm-workspace.yaml` 里的 `minimumReleaseAgeExclude` 是 pnpm 11 因本机全局 `minimumReleaseAge` 策略自动写的，删了会装不上 DSH 的 prerelease，别清。**
 - 两半边：`src/` = host（凭据、上游协议、routes、provider）；`src/client/` = 浏览器半边（槽位、设置页、仪表盘）。各有 tsconfig（`tsconfig.json` / `tsconfig.client.json`）。
@@ -39,6 +39,15 @@
 - **npm 上的 `dsh-workbuddy-connect` 仍是上游 `corrinehu` 的线**（当前 `0.7.1`，只支持 DSH `0.2.0-rc.2`）。本仓库发的是 `dsh-workbuddy-connect-functy`。provider id 和 CLI bin 名没改。
 - 同一 profile 里 `dsh-infinite-gen-4: "github:Minglink/…#<sha>"` 是 `github:` 规格可用的先例，需要可复现时可以钉 SHA。
 - `package.json` 的 `repository`/`homepage`/`bugs` 已指向 `functy23`；署名按 MIT「保留原作者 + 追加」处理：`LICENSE` = `Copyright (c) 2026 Corrine Hu and Functy`，`package.json` 的 `author` 同文。**不要**把原作者从署名里删掉。
+- **npm 落库比 CLI 报的慢几分钟**：`npm publish` 打印 `+ pkg@ver` 之后，`npm view` 仍可能只看到旧版本、tarball 也 404（0.13.7 那次约十分钟）。**重发会报 `403 cannot publish over the previously published versions`——那句才是「写侧已收下」的证据，别据此改版本号重来**。真落库的判断：`dist-tags.latest` 变过来，或直接查 `registry.npmjs.org/<pkg>/<ver>`。
+
+## 改名会连带的三处身份（0.13.6–0.13.8 实测）
+
+改一次对外名要同时顾三处，漏任一处都是「装完才炸」：
+
+1. **客户端 bundle 的注册 id 必须等于包名**。DSH 以「解析出的 manifest 包名」作为浏览器模块身份；`lib/client.js` 里 `window.__ModuleLoader__.load({ id })` 与包名不符时，那一行等不到自己的 factory，加载器会**重试同一份脚本**，第二次执行就撞 `duplicate factory registration` → `1 entry did not activate`，侧栏卡片/仪表盘/设置页整块消失（宿主侧模型分组不受影响）。id 现在由 `tsdown.config.ts` 从 `package.json` 的 `name` 派生，`tests/version.spec.ts` 有断言；**改名后必须 `pnpm run build` 并重装，光推代码不够**。
+2. **profile 层补丁里的 `name:`**：`~/.dsh/profiles/<p>/cordis.patch.yml` 的 `- id: llm-workbuddy` / `name: <包名>` 是手写历史值，改名不会跟着变；不改就成了「同一插件两条 entry」，同样撞重复注册。tauri profile 装的还是旧构建（旧包名），**在它更新之前不要动它那条**。
+3. **插件页的标题与描述来自包内 `locale/<语言>.json`** 的 `meta.title` / `meta.description`，缺失才回退 `package.json` 的 `name` / `description`。`locale/en.json` 是必备锚点（扫描的是它所在目录），语言 id 只允许 `/^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$/`，别把 README 之类丢进 `locale/`；`exports` 要导出 `./locale/*.json`、`files` 要带 `locale`，否则运行时解析不到。
 
 ## 发版规矩
 
